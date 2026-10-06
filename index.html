@@ -943,7 +943,7 @@ function placeStencil(){
 // ---------- Camera ----------
 function preset(){
   const id = STAGES[stage].id;
-  if (id === 'points') return [L(-34, -30, 30), L(16, 0, -2)];
+  if (id === 'points' || id === 'out') return [L(-34, -30, 30), L(16, 0, -2)];   // same view at both ends
   if (id === 'pillars') return [L(3, -19, 13), L(19, -1, G)];
   if (id === 'pfn') { const pl = V.pillars[sel]; return [L(pl.cx - 4.5, pl.cy - 5.5, G + 4.5), L(pl.cx, pl.cy, G + .7)]; }
   if (id === 'head' && headZoom) { const x = XMIN + (headCell[0] + .5)*FS, y = YMIN + (headCell[1] + .5)*FS; return [L(x - 7, y - 5.5, G + 5.5), L(x + .3, y, G + .4)]; }
@@ -1241,7 +1241,7 @@ function setStage(i, instant = false){
   scatterAnim = null;
   const id = STAGES[i].id;
   pointsObj.visible = !['scatter', 'backbone', 'head'].includes(id);
-  colorPoints(id === 'points' ? 'all' : (id === 'decode' || id === 'nms') ? 'dim' : 'range');
+  colorPoints(id === 'points' || id === 'out' ? 'all' : (id === 'decode' || id === 'nms') ? 'dim' : 'range');
   rangeBox.visible = id === 'points' || id === 'pillars';
   coarseGrid.visible = id === 'pillars' || id === 'pfn';
   pillarMesh.visible = id === 'pillars' || id === 'pfn';
