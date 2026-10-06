@@ -157,7 +157,7 @@ table.anch tr.win td{font-weight:600;color:var(--ink);background:var(--red-tint)
     <div class="tblock" aria-label="Drawing details">
       <div><span class="k">Config</span><span class="v">KITTI · CUDA-PointPillars</span></div>
       <div><span class="k">Scan</span><span class="scan"><span class="v" id="tb-scan">001</span><button class="btn" id="btn-next" type="button">Next scan</button></span></div>
-      <div><span class="k">Sheet</span><span class="v" id="tb-sheet">1 / 8</span></div>
+      <div><span class="k">Sheet</span><span class="v" id="tb-sheet">1 / 9</span></div>
     </div>
   </header>
 
@@ -215,10 +215,12 @@ const STAGES = [
   { id:'head',     name:'Detection head',  lines:['Detection', 'head'],   runs:'layers' },
   { id:'decode',   name:'Box decoding',    lines:['Box', 'decoding'],     runs:'cuda'   },
   { id:'nms',      name:'NMS',             lines:['NMS'],                 runs:'cudacpu' },
+  { id:'out',      name:'Detections',      lines:['Detections'],          runs:'output' },
 ];
-const RUNS = { input:'sensor data', cuda:'CUDA kernel', cudacpu:'CUDA + CPU', layers:'layers', plugin:'plugin' };
+const RUNS = { input:'sensor data', output:'model output', cuda:'CUDA kernel', cudacpu:'CUDA + CPU', layers:'layers', plugin:'plugin' };
 const RUNS_LONG = {
   input:  'Raw input from the sensor, copied into GPU memory.',
+  output: 'The model\'s output, handed to tracking and planning.',
   cuda:   'Standalone CUDA kernel, outside the TensorRT engine.',
   layers: 'TensorRT layers, inside the engine.',
   plugin: 'TensorRT plugin: hand-written CUDA that the engine calls as one of its layers.',
@@ -550,8 +552,9 @@ const GAPS = [92, 128, 92, 92, 92, 128, 92, 92];   // wider where a wire crosses
 function buildSchematic(){
   const svg = $('#schem'), bw = 96, bh = 50, x0 = 16, top = 40, cy = top + bh/2;
   const bx = []; let x = x0;
-  for (let i = 0; i < 8; i++) { bx.push(x); x += bw + GAPS[i]; }
-  const W = x + 70, H = top + bh + 36;
+  for (let i = 0; i < STAGES.length; i++) { bx.push(x); x += bw + (GAPS[i] || 0); }
+  const W = x + 16, H = top + bh + 36;
+  const para = (x, w) => `${x + 9},${top} ${x + w},${top} ${x + w - 9},${top + bh} ${x},${top + bh}`;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   let h = `<defs>
     <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#FBFBF9"/><line class="hl" x1="0" y1="0" x2="0" y2="6"/></pattern>
@@ -562,18 +565,17 @@ function buildSchematic(){
   const ex0 = bx[2] - 14, ex1 = bx[5] + bw + 14;
   h += `<rect class="eng" x="${ex0}" y="${top - 26}" width="${ex1 - ex0}" height="${bh + 56}"/>`;
   h += `<text class="engl" x="${ex0 + 10}" y="${top - 11}">TensorRT engine · built from the ONNX graph</text>`;
-  for (let i = 0; i < 8; i++) {
-    const xa = bx[i] + bw, xb = xa + GAPS[i];
+  for (let i = 0; i < STAGES.length - 1; i++) {
+    const xa = bx[i] + bw, xb = bx[i + 1];
     h += `<path class="wire" data-w="${i}" d="M${xa} ${cy} H${xb - 1}" marker-end="url(#arr)"/>`;
     h += `<text class="wl" data-w="${i}" x="${(xa + xb)/2}" y="${cy - 8}">${WIRES[i]}</text>`;
   }
-  const tx = bx[7] + bw + GAPS[7], para = (x, w) => `${x + 9},${top} ${x + w},${top} ${x + w - 9},${top + bh} ${x},${top + bh}`;
-  h += `<polygon class="io" points="${para(tx, 64)}"/><text class="terml" x="${tx + 32}" y="${cy + 4.5}" text-anchor="middle">boxes</text>`;
   STAGES.forEach((s, i) => {
     const xx = bx[i];
     h += `<g class="blk${s.runs === 'plugin' ? ' plugin' : ''}" data-i="${i}" tabindex="0" role="button" aria-label="Stage ${i + 1}: ${s.name}">`;
-    h += s.runs === 'input' ? `<polygon class="box" points="${para(xx, bw)}"/>` : `<rect class="box" x="${xx}" y="${top}" width="${bw}" height="${bh}"/>`;
-    h += `<text class="num" x="${xx + (s.runs === 'input' ? 13 : 6)}" y="${top + 13}">${i + 1}</text>`;
+    const io = s.runs === 'input' || s.runs === 'output';
+    h += io ? `<polygon class="box" points="${para(xx, bw)}"/>` : `<rect class="box" x="${xx}" y="${top}" width="${bw}" height="${bh}"/>`;
+    h += `<text class="num" x="${xx + (io ? 13 : 6)}" y="${top + 13}">${i + 1}</text>`;
     if (s.lines.length === 1) h += `<text class="nm" x="${xx + bw/2}" y="${cy + 6}" text-anchor="middle">${s.lines[0]}</text>`;
     else h += `<text class="nm" x="${xx + bw/2}" y="${cy - 1}" text-anchor="middle">${s.lines[0]}</text><text class="nm" x="${xx + bw/2}" y="${cy + 14}" text-anchor="middle">${s.lines[1]}</text>`;
     h += `<text class="run" x="${xx + bw/2}" y="${top + bh + 17}" text-anchor="middle">${RUNS[s.runs]}</text></g>`;
@@ -905,6 +907,8 @@ function drawBoxes(mode){
   let items;
   if (mode === 'decode') {
     items = list.map(b => ({ b, rgb:rgb01(mix(PAPER, CLASS_RGB[b.cls], .3 + .7*b.score)) }));
+  } else if (mode === 'final') {
+    items = steps.map(st => ({ b:list[st.keep], rgb:rgb01(CLASS_RGB[list[st.keep].cls]) }));
   } else {
     const kept = new Set(), gone = new Set();
     for (let s = 0; s < nmsShown; s++) { kept.add(steps[s].keep); steps[s].removed.forEach(j => gone.add(j)); }
@@ -1059,8 +1063,17 @@ function renderText(){
       <p class="legend" id="nms-txt" style="margin-top:10px">${nmsLine()}</p>
       <div class="ctl"><label for="iou">Overlap (IoU) threshold <b id="iou-l">${iouThr.toFixed(2)}</b></label><input id="iou" type="range" min="0.01" max="0.7" step="0.01" value="${iouThr}"></div>`;
   }
-  h += ABOUT;
-  $('#text').innerHTML = h;
+  if (id === 'out') {
+    const list = activeCands(), det = steps.map(st => list[st.keep]);
+    const deg = b => Math.round(((b.yaw*180/Math.PI) % 360 + 360) % 360);
+    const rows = det.map(b => `<tr><td><span class="sw" style="color:${CLASS_HEX[b.cls]}"></span>${CLASSES[b.cls]}</td><td class="num">${b.score.toFixed(2)}</td><td class="num">${b.x.toFixed(1)}, ${b.y.toFixed(1)}</td><td class="num">${b.l.toFixed(1)}×${b.w.toFixed(1)}×${b.h.toFixed(1)}</td><td class="num">${deg(b)}°</td></tr>`).join('');
+    h += `<p>This is everything the model hands on: ${det.length} boxes for this scan, each with a class, a confidence, a center, a size and a heading. Tracking, prediction and planning work from this list. They never see the points, pillars or feature maps.</p>
+      <p class="aside">The sensor spins 10 times a second, so the whole pipeline, from points to this list, has to finish well inside 100 ms, with time left over for everything downstream.</p>
+      ${shapes([row('in', `[${fmt(list.length)}, 9]`, 'candidate boxes, before NMS'), row('out', `[${det.length}, 9]`, 'x, y, z, l, w, h, heading, class, score')])}
+      <figure class="fig"><table class="anch"><thead><tr><th>Class</th><th style="text-align:right">Score</th><th style="text-align:right">x, y (m)</th><th style="text-align:right">l×w×h (m)</th><th style="text-align:right">Heading</th></tr></thead><tbody>${rows}</tbody></table><figcaption><b>Fig. 9a</b>The detections, strongest first. x is meters ahead of the sensor, y meters to the left.</figcaption></figure>
+      <div class="row"><button class="btn" id="nx3" type="button">Next scan</button></div>`;
+  }
+  $('#text').innerHTML = h + ABOUT;
   bindText();
 }
 
@@ -1075,6 +1088,7 @@ function bindText(){
     updateCaption();
   });
   if (id === 'points') $('#nx2').addEventListener('click', nextScan);
+  if (id === 'out') $('#nx3').addEventListener('click', nextScan);
   if (id === 'pillars') { drawSlots(); drawTable(); }
   if (id === 'pfn') drawPFN();
   if (id === 'scatter') $('#replay').addEventListener('click', startScatter);
@@ -1213,6 +1227,7 @@ function updateCaption(){
   else if (id === 'head') { t = `Best class score at each of 248 × 216 positions, in the same colors as the boxes later on: black car, blue pedestrian, brown cyclist. Darker means more confident (simulated). ${hotspots.length} hotspots clear the 0.10 threshold. At the red square, the best-scoring of its six anchors. Rings mark each hotspot.`; hint += ' · click a hotspot to zoom to its anchors'; }
   else if (id === 'decode') t = `${fmt(activeCands().length)} candidate boxes with score ≥ ${scoreThr.toFixed(2)}. Fainter means lower score. Black car, blue pedestrian, brown cyclist.`;
   else if (id === 'nms') t = nmsShown >= steps.length ? `${fmt(activeCands().length)} candidates reduced to ${steps.length} detections.` : `Step ${nmsShown} of ${steps.length}. Red: kept this step. Pink: deleted for overlapping it.`;
+  if (id === 'out') t = `${steps.length} detections from scan ${k + 1}. Black car, blue pedestrian, brown cyclist; the short line on top of each box points to its front.`;
   $('#figcap').innerHTML = `<b>Fig. ${n}</b>${t}`;
   $('#hint').textContent = hint;
 }
@@ -1221,7 +1236,7 @@ function updateCaption(){
 function setStage(i, instant = false){
   stage = i;
   markSchematic(i);
-  $('#tb-sheet').textContent = `${i + 1} / 8`;
+  $('#tb-sheet').textContent = `${i + 1} / ${STAGES.length}`;
   stopNMS(); if (stencilTimer) { clearInterval(stencilTimer); stencilTimer = null; }
   scatterAnim = null;
   const id = STAGES[i].id;
@@ -1247,6 +1262,7 @@ function setStage(i, instant = false){
   if (id === 'head') { headZoom = false; buildHotspotRings(); buildAnchors(); }
   if (id === 'decode') drawBoxes('decode');
   if (id === 'nms') { steps = runNMS(activeCands(), iouThr); nmsShown = steps.length; drawBoxes('nms'); }
+  if (id === 'out') { steps = runNMS(activeCands(), iouThr); drawBoxes('final'); }
   renderText(); updateCaption(); flyTo(instant);
 }
 
@@ -1282,7 +1298,7 @@ $('#btn-next').addEventListener('click', () => { if (ready) nextScan(); });
 $('#btn-reset').addEventListener('click', () => { if (ready) flyTo(false); });
 window.addEventListener('keydown', e => {
   if (!ready || (e.target.closest && e.target.closest('input, textarea, select'))) return;
-  if (e.key === 'ArrowRight' && stage < 7) setStage(stage + 1);
+  if (e.key === 'ArrowRight' && stage < STAGES.length - 1) setStage(stage + 1);
   if (e.key === 'ArrowLeft' && stage > 0) setStage(stage - 1);
 });
 

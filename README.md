@@ -4,11 +4,11 @@ A clickable 3D walkthrough of one LiDAR scan moving through the PointPillars obj
 
 **Live:** https://tbfouts.github.io/inside-pointpillars/
 
-## The eight stages
+## The stages
 
 | # | Stage | Where it runs in a TensorRT deployment |
 |---|---|---|
-| 1 | Points | Input, copied to the GPU |
+| 1 | Points | Sensor data in, copied to the GPU |
 | 2 | Pillars (voxelization) | CUDA kernel, outside the engine |
 | 3 | Pillar features | TensorRT layers |
 | 4 | Scatter to the bird's-eye-view grid | TensorRT plugin (hand-written CUDA inside the engine) |
@@ -16,6 +16,7 @@ A clickable 3D walkthrough of one LiDAR scan moving through the PointPillars obj
 | 6 | Detection head | TensorRT layers |
 | 7 | Box decoding | CUDA kernel, outside the engine |
 | 8 | Non-maximum suppression | CUDA kernels outside the engine, finished by a CPU loop |
+| 9 | Detections | Model output, handed to tracking and planning |
 
 Each stage shows the tensors going in and out, labeled as **features** (different every scan) or **weights** (fixed after training).
 
