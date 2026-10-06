@@ -1,0 +1,1331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="How one LiDAR scan becomes 3D boxes in PointPillars, drawn stage by stage with the tensor shape at every step.">
+<title>Inside PointPillars</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;700&family=Spline+Sans+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a drawing sheet. Title block top right; the pipeline drawn as a block diagram across the top (click a block);
+   below it a figure plate (the 3D view) with a numbered caption, and the stage text beside it. Stacks on phones.
+   Single light theme by choice: black ink on paper, red as the one spot color, blue reserved for weights. */
+:root{
+  --paper:#EEEEEA; --sheet:#FBFBF9; --ink:#16181B; --ink-2:#43474D; --ink-3:#5F646A;
+  --rule:#BFC1BB; --rule-2:#DADBD6; --red:#C8261C; --red-tint:#F7E1DE; --blue:#2450C8;
+  --f-sans:"Schibsted Grotesk","Helvetica Neue",Arial,sans-serif;
+  --f-mono:"Spline Sans Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  color-scheme:light;
+}
+html{background:var(--paper)}
+body{background:var(--paper);color:var(--ink);font:16px/1.6 var(--f-sans);-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+button{font:inherit;color:inherit}
+[hidden]{display:none!important}
+:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+.sheet{max-width:1480px;margin:0 auto;padding-inline:24px;padding-block:20px 40px}
+
+.head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:16px 32px;padding-bottom:14px;border-bottom:1.5px solid var(--ink)}
+.head h1{font:700 36px/1.02 var(--f-sans);letter-spacing:-.025em;margin:0;text-wrap:balance}
+.head p{margin:8px 0 0;color:var(--ink-2);max-width:58ch}
+.tblock{display:grid;grid-template-columns:auto auto auto;border:1.5px solid var(--ink);background:var(--sheet);font-variant-numeric:tabular-nums}
+.tblock > div{padding:6px 12px 8px;border-left:1px solid var(--ink);min-width:0}
+.tblock > div:first-child{border-left:none}
+.tblock .k{display:block;font:500 10px/1.3 var(--f-sans);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+.tblock .v{display:block;font:500 14px/1.35 var(--f-mono);white-space:nowrap}
+.tblock .scan{display:flex;align-items:center;gap:10px}
+.btn{font:500 13px/1 var(--f-sans);background:var(--sheet);border:1px solid var(--ink);padding:7px 10px;cursor:pointer;color:var(--ink)}
+.btn:hover,.btn[aria-pressed="true"]{background:var(--ink);color:var(--sheet)}
+
+.schem-wrap{overflow-x:auto;margin:16px 0 4px}
+#schem{display:block;width:100%;min-width:980px;height:auto}
+#schem .blk{cursor:pointer}
+#schem .blk rect.box{fill:var(--sheet);stroke:var(--ink);stroke-width:1.5}
+#schem .blk.plugin rect.box{fill:url(#hatch)}
+#schem .blk .num{font:500 11px var(--f-mono);fill:var(--ink-3)}
+#schem .blk .nm{font:700 13.5px var(--f-sans);fill:var(--ink)}
+#schem .blk .run{font:400 11.5px var(--f-sans);fill:var(--ink-3)}
+#schem .blk:hover rect.box{stroke-width:2.5}
+#schem .blk.on rect.box{stroke:var(--red);stroke-width:2.5;fill:var(--red-tint)}
+#schem .blk.plugin.on rect.box{fill:url(#hatch-red)}
+#schem .blk.on .num,#schem .blk.on .run{fill:var(--red)}
+#schem .blk:focus{outline:none}
+#schem .blk:focus-visible rect.box{stroke:var(--red);stroke-dasharray:4 2}
+#schem .wire{stroke:var(--ink);stroke-width:1.25;fill:none}
+#schem .wire.on{stroke:var(--red);stroke-width:2}
+#schem .wl{font:400 11.5px var(--f-mono);fill:var(--ink-2);text-anchor:middle}
+#schem .wl.on{fill:var(--red);font-weight:500}
+#schem .eng{fill:none;stroke:var(--ink);stroke-width:1.25;stroke-dasharray:7 5}
+#schem .engl{font:500 11px var(--f-sans);letter-spacing:.07em;text-transform:uppercase;fill:var(--ink)}
+#schem .hl{stroke:var(--rule);stroke-width:1.3}
+#schem .hr{stroke:#E5A7A1;stroke-width:1.3}
+#schem .term{fill:var(--ink)}
+#schem .terml{font:400 12.5px var(--f-sans);fill:var(--ink-2)}
+.key{display:flex;flex-wrap:wrap;gap:4px 22px;font-size:13px;color:var(--ink-3);margin-bottom:20px}
+.key span{display:inline-flex;align-items:center;gap:8px}
+.key svg{flex:none}
+
+.body{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(320px,1fr);gap:28px;align-items:start}
+.plate-col{position:sticky;top:calc(env(safe-area-inset-top,0px) + 12px);min-width:0}
+.plate{position:relative;height:clamp(340px,64vh,700px);background:var(--sheet);border:1.5px solid var(--ink)}
+.plate canvas{display:block;width:100%;height:100%}
+.plate .labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.plate .lbl{position:absolute;left:0;top:0;font:500 12px/1.2 var(--f-sans);background:var(--sheet);border:1px solid;padding:2px 6px;white-space:nowrap;will-change:transform}
+.plate .tools{position:absolute;top:10px;right:10px;display:flex;gap:6px}
+.plate .loading{position:absolute;inset:0;display:grid;place-items:center;padding:24px;color:var(--ink-3);font:13px var(--f-mono);text-align:center}
+.plate .err{max-width:50ch;text-align:left;font:15px/1.55 var(--f-sans);color:var(--ink);border:1.5px solid var(--red);background:var(--sheet);padding:14px 16px}
+.plate .err b{color:var(--red)}
+.plate .err code{font:12px var(--f-mono);color:var(--ink-2)}
+.figcap{margin:10px 0 0;font-size:14.5px;line-height:1.5;color:var(--ink-2);max-width:80ch}
+.figcap b{color:var(--ink);font-weight:700;margin-right:6px}
+.hint{margin:3px 0 0;font-size:12.5px;color:var(--ink-3)}
+
+.text{min-width:0}
+.text .runs{font-size:14px;color:var(--ink-3);margin:0 0 2px}
+.text h2{font:700 40px/1.04 var(--f-sans);letter-spacing:-.025em;margin:0 0 14px;display:flex;gap:14px;align-items:baseline;text-wrap:balance}
+.text h2 .n{font:500 18px var(--f-mono);color:var(--red);letter-spacing:0}
+.text p{margin:0 0 12px;max-width:62ch}
+.text p.aside{color:var(--ink-2);font-size:15px}
+.text code{font:500 13px var(--f-mono);background:var(--sheet);border:1px solid var(--rule-2);padding:0 4px}
+.shapes{margin:20px 0 0;border-top:1.5px solid var(--ink);border-bottom:1px solid var(--rule)}
+.shapes table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.shapes td{padding:7px 8px 7px 0;vertical-align:baseline;border-top:1px solid var(--rule-2)}
+.shapes tr:first-child td{border-top:none}
+.shapes td.role{font:500 10.5px/1 var(--f-sans);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);width:64px}
+.shapes td.sh{font:500 14px/1.3 var(--f-mono);white-space:nowrap}
+.shapes td.nm{font-size:13.5px;color:var(--ink-2)}
+.shapes tr.w td.sh,.shapes tr.w td.nm{color:var(--blue)}
+.legend{font-size:12.5px;color:var(--ink-3);margin:6px 0 0}
+.legend i{font-style:normal;color:var(--blue)}
+.ctl{margin:20px 0 0}
+.ctl label{display:flex;justify-content:space-between;gap:10px;font-size:14px;color:var(--ink-2);margin-bottom:4px}
+.ctl label b{font:500 13.5px var(--f-mono);color:var(--ink)}
+input[type=range]{width:100%;accent-color:var(--ink)}
+.row{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.fig{margin:22px 0 0}
+.fig canvas,.fig svg{display:block;width:100%;height:auto;background:var(--sheet);border:1px solid var(--ink)}
+.fig figcaption{font-size:13px;color:var(--ink-3);margin-top:6px;line-height:1.45}
+.fig figcaption b{color:var(--ink);margin-right:5px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+table.anch{width:100%;border-collapse:collapse;font:13px/1.4 var(--f-mono);font-variant-numeric:tabular-nums;margin-top:6px}
+table.anch th{font:500 10.5px var(--f-sans);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);text-align:left;padding:5px 4px;border-bottom:1.5px solid var(--ink)}
+table.anch td{padding:5px 4px;border-bottom:1px solid var(--rule-2)}
+table.anch td.num{text-align:right}
+table.anch tr.win td{font-weight:600;color:var(--ink);background:var(--red-tint)}
+.hs-list{display:grid;gap:0;border-top:1.5px solid var(--ink);max-height:248px;overflow-y:auto}
+.hs{display:grid;grid-template-columns:22px 92px 44px minmax(0,1fr);align-items:baseline;gap:6px;text-align:left;background:none;border:none;border-bottom:1px solid var(--rule-2);padding:6px 4px;cursor:pointer;font-size:13.5px;color:var(--ink)}
+.hs:hover{background:var(--sheet)}
+.hs[aria-pressed="true"]{background:var(--red-tint)}
+.hs-s{font:500 13px var(--f-mono);font-variant-numeric:tabular-nums}
+.hs-p{font-size:12.5px;color:var(--ink-3)}
+.sw{display:inline-block;width:16px;height:0;border-top:2px solid;margin-right:7px;vertical-align:middle}
+.about{margin-top:28px;padding-top:12px;border-top:1px solid var(--rule);font-size:12.5px;line-height:1.55;color:var(--ink-3);max-width:62ch}
+.about b{color:var(--ink-2)}
+.about a{color:var(--ink-2);text-decoration:underline;text-underline-offset:2px}
+.about a:hover{color:var(--red)}
+.pyr text{font-family:var(--f-mono)}
+.pyr rect{fill:var(--sheet);stroke:var(--ink);stroke-width:1.2}
+.pyr rect.cat{fill:var(--ink)}
+.pyr .l{fill:var(--ink-2);font-size:9.5px}
+.pyr .lb{fill:var(--ink);font-size:10px;font-weight:500}
+.pyr path{stroke:var(--ink-3);fill:none}
+
+@media (max-width:960px){
+  .body{grid-template-columns:1fr}
+  .plate-col{position:static}
+  .plate{height:56vh;min-height:320px}
+  .text h2{font-size:32px}
+  .head h1{font-size:30px}
+}
+@media (max-width:560px){
+  .tblock{grid-template-columns:1fr 1fr}
+  .tblock > div:nth-child(3){grid-column:1 / -1;border-left:none;border-top:1px solid var(--ink)}
+  .sheet{padding-inline:16px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body style="margin:0">
+<div class="sheet">
+  <header class="head">
+    <div>
+      <h1>Inside PointPillars</h1>
+      <p>How one LiDAR scan becomes a list of 3D boxes, drawn stage by stage, with the shape of the data at every step.</p>
+    </div>
+    <div class="tblock" aria-label="Drawing details">
+      <div><span class="k">Config</span><span class="v">KITTI · CUDA-PointPillars</span></div>
+      <div><span class="k">Scan</span><span class="scan"><span class="v" id="tb-scan">001</span><button class="btn" id="btn-next" type="button">Next scan</button></span></div>
+      <div><span class="k">Sheet</span><span class="v" id="tb-sheet">1 / 8</span></div>
+    </div>
+  </header>
+
+  <div class="schem-wrap"><svg id="schem" role="group" aria-label="Pipeline diagram. Select a stage."></svg></div>
+  <div class="key" aria-label="Diagram key">
+    <span><svg width="26" height="14" aria-hidden="true"><rect x="1" y="1" width="24" height="12" fill="none" stroke="#16181B" stroke-width="1.25" stroke-dasharray="5 3"/></svg>TensorRT engine boundary</span>
+    <span><svg width="26" height="14" aria-hidden="true"><defs><pattern id="kh" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" fill="#FBFBF9"/><line x1="0" y1="0" x2="0" y2="5" stroke="#BFC1BB" stroke-width="1.3"/></pattern></defs><rect x="1" y="1" width="24" height="12" fill="url(#kh)" stroke="#16181B" stroke-width="1.25"/></svg>Plugin: custom CUDA inside the engine</span>
+    <span>Blocks outside the boundary are standalone CUDA kernels</span>
+  </div>
+
+  <div class="body">
+    <div class="plate-col">
+      <div class="plate" id="plate">
+        <div class="loading" id="loading">Ray-casting a LiDAR scan…</div>
+        <div class="tools"><button class="btn" id="btn-reset" type="button">Reset view</button></div>
+      </div>
+      <p class="figcap" id="figcap"></p>
+      <p class="hint" id="hint"></p>
+    </div>
+    <article class="text" id="text" aria-live="polite"></article>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+
+const RM = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let tween = null, ready = false;
+const $ = s => document.querySelector(s);
+const fmt = n => Math.round(n).toLocaleString('en-US');
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+// ---------- Model constants: CUDA-PointPillars KITTI configuration ----------
+const XMIN = 0, XMAX = 69.12, YMIN = -39.68, YMAX = 39.68, ZMIN = -3, ZMAX = 1, VS = 0.16;
+const GX = 432, GY = 496, MAXV = 40000, MAXP = 32;
+const FX = 216, FY = 248, FS = 0.32;            // head output grid (half resolution)
+const CZ = (ZMIN + ZMAX) / 2;                   // pillar center height
+const G = -1.73;                                // ground height below the sensor (KITTI)
+const ANCHORS = [[3.9,1.6,1.56,0],[3.9,1.6,1.56,1.57],[0.8,0.6,1.73,0],[0.8,0.6,1.73,1.57],[1.76,0.6,1.73,0],[1.76,0.6,1.73,1.57]];
+const ANCHOR_BOTTOM = [-1.78, -0.6, -0.6];
+const CLASSES = ['Car', 'Pedestrian', 'Cyclist'];
+
+// ---------- Print palette (RGB 0–255): ink on paper, red spot color, blue for weights ----------
+const PAPER = [251,251,249], INK = [22,24,27], RED = [200,38,28], BLUE = [36,80,200], OCHRE = [138,95,0];
+const CLASS_RGB = [INK, BLUE, OCHRE];
+const CLASS_HEX = ['#16181B', '#2450C8', '#8A5F00'];
+
+const STAGES = [
+  { id:'points',   name:'Points',          lines:['Points'],              runs:'input'  },
+  { id:'pillars',  name:'Pillars',         lines:['Pillars'],             runs:'cuda'   },
+  { id:'pfn',      name:'Pillar features', lines:['Pillar', 'features'],  runs:'layers' },
+  { id:'scatter',  name:'Scatter',         lines:['Scatter'],             runs:'plugin' },
+  { id:'backbone', name:'Backbone',        lines:['Backbone'],            runs:'layers' },
+  { id:'head',     name:'Detection head',  lines:['Detection', 'head'],   runs:'layers' },
+  { id:'decode',   name:'Box decoding',    lines:['Box', 'decoding'],     runs:'cuda'   },
+  { id:'nms',      name:'NMS',             lines:['NMS'],                 runs:'cudacpu' },
+];
+const RUNS = { input:'input', cuda:'CUDA kernel', cudacpu:'CUDA + CPU', layers:'layers', plugin:'plugin' };
+const RUNS_LONG = {
+  input:  'Raw input from the sensor, copied into GPU memory.',
+  cuda:   'Standalone CUDA kernel, outside the TensorRT engine.',
+  layers: 'TensorRT layers, inside the engine.',
+  plugin: 'TensorRT plugin: hand-written CUDA that the engine calls as one of its layers.',
+  cudacpu: 'CUDA kernels outside the engine, finished by a short loop on the CPU.',
+};
+
+// ---------- Small helpers ----------
+function mulberry32(a){ return function(){ a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function gauss(r){ let u = 0; while (!u) u = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * r()); }
+const mix = (a, b, t) => { t = clamp(t, 0, 1); return [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t]; };
+const css = c => `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+const rgb01 = c => [c[0]/255, c[1]/255, c[2]/255];
+
+// ---------- Synthetic street (world frame; the ego car drives +x at 10 m/s) ----------
+function buildStatic(){
+  const r = mulberry32(3), s = [];
+  for (const side of [-1, 1]) {
+    let x = -80;
+    while (x < 230) {
+      const len = 12 + r()*22, h = 5 + r()*11, depth = 9 + r()*4, y0 = side < 0 ? -13.5 : 14.5;
+      s.push({ k:'box', x:x+len/2, y:y0 + side*depth/2, z0:G, z1:G+h, l:len, w:depth, yaw:(r()-.5)*0.04, refl:.18 + r()*.2 });
+      x += len + 3 + r()*9;
+    }
+  }
+  for (let x = -60; x < 230; x += 18) {
+    s.push({ k:'cyl', x:x + r()*2, y:-8.2, z0:G, z1:G+6.5, r:.12, refl:.45, pole:true });
+    s.push({ k:'cyl', x:x + 9 + r()*2, y:9.7, z0:G, z1:G+6.5, r:.12, refl:.45, pole:true });
+  }
+  for (let x = -56; x < 230; x += 14) {
+    for (const y of [-10.4, 11.6]) {
+      if (r() < 0.25) continue;
+      const xx = x + r()*4;
+      s.push({ k:'cyl', x:xx, y, z0:G, z1:G+2.6, r:.17, refl:.15 });
+      s.push({ k:'sph', x:xx, y:y + (r()-.5)*.4, z:G + 3.7 + r()*.6, r:1.3 + r()*.6, refl:.12 });
+    }
+  }
+  for (let x = -50; x < 230; x += 40) s.push({ k:'box', x:x+12, y:-12.6, z0:G, z1:G+1.0, l:22, w:.35, yaw:0, refl:.3 });
+  return s;
+}
+function buildMovers(){
+  const r = mulberry32(5), m = [];
+  const car = (x, y, yaw, v) => m.push({ cls:0, x, y, yaw, v, l:3.9 + r()*.7, w:1.7 + r()*.2, h:1.42 + r()*.22, refl:.22 + r()*.35 });
+  const ped = (x, y, yaw, v) => m.push({ cls:1, x, y, yaw, v, l:.6, w:.6, h:1.65 + r()*.2, refl:.22 });
+  const cyc = (x, y, yaw, v) => m.push({ cls:2, x, y, yaw, v, l:1.76, w:.6, h:1.75, refl:.3 });
+  car(18, 0, 0, 10); car(8, -3.5, 0, 8.5); car(44, -3.5, 0, 9.2); car(-14, 0, 0, 10.4);
+  car(58, 3.5, Math.PI, 11); car(30, 7, Math.PI, 9); car(88, 3.5, Math.PI, 10.5);
+  for (const x of [-11, 3.5, 12, 26.5, 33, 50.5, 63, 77, 92]) car(x, -6.6, (r() < .5 ? 0 : Math.PI) + (r()-.5)*.06, 0);
+  ped(22, -9.0, 0, 1.3); ped(36, 10.3, Math.PI, 1.2); ped(47.5, -8.7, Math.PI/2, 0); ped(48.4, -9.4, Math.PI/2, 0);
+  cyc(29, -5.0, 0, 5.2);
+  return m;
+}
+const STATIC = buildStatic(), MOVERS = buildMovers();
+
+function groundRefl(wx, y){
+  const mod = (a, b) => ((a % b) + b) % b;
+  if (y > -5.6 && y < 9.1) {
+    const near = (c, w) => Math.abs(y - c) < w;
+    if (near(-5.5, .08) || near(9.0, .08) || near(1.65, .06) || near(1.85, .06)) return .68;
+    if ((near(-1.75, .07) || near(5.25, .07)) && mod(wx, 9) < 3) return .65;
+    return .12;
+  }
+  return Math.abs(y) < 13 ? .24 : .15;
+}
+
+function addMoverPrims(prims, o, x, y, idx){
+  const c = Math.cos(o.yaw), s = Math.sin(o.yaw);
+  if (o.cls === 0) {
+    prims.push({ k:'box', x, y, z0:G+.3, z1:G+o.h*.62, l:o.l, w:o.w, yaw:o.yaw, refl:o.refl, obj:idx });
+    const back = -.15*o.l;
+    prims.push({ k:'box', x:x + c*back, y:y + s*back, z0:G+o.h*.62, z1:G+o.h, l:o.l*.55, w:o.w*.92, yaw:o.yaw, refl:o.refl*.8, obj:idx });
+  } else if (o.cls === 1) {
+    prims.push({ k:'cyl', x, y, z0:G, z1:G+.9, r:.17, refl:o.refl, obj:idx });
+    prims.push({ k:'cyl', x, y, z0:G+.9, z1:G+o.h-.24, r:.23, refl:o.refl, obj:idx });
+    prims.push({ k:'sph', x, y, z:G+o.h-.12, r:.12, refl:o.refl, obj:idx });
+  } else {
+    prims.push({ k:'box', x, y, z0:G+.05, z1:G+1.0, l:1.7, w:.14, yaw:o.yaw, refl:o.refl, obj:idx });
+    prims.push({ k:'cyl', x:x - c*.15, y:y - s*.15, z0:G+.95, z1:G+1.55, r:.22, refl:.25, obj:idx });
+    prims.push({ k:'sph', x:x - c*.1, y:y - s*.1, z:G+1.63, r:.12, refl:.25, obj:idx });
+  }
+}
+
+// Ray tests with the ray starting at the sensor (origin); direction is unit length.
+function hitBox(p, dx, dy, dz){
+  const c = p.c, s = p.s;
+  const ox = -p.x*c - p.y*s, oy = p.x*s - p.y*c, ux = dx*c + dy*s, uy = -dx*s + dy*c;
+  const hl = p.l/2, hw = p.w/2;
+  let a = 0, b = 1e9, t1, t2, t;
+  if (Math.abs(ux) < 1e-9) { if (ox < -hl || ox > hl) return Infinity; }
+  else { t1 = (-hl-ox)/ux; t2 = (hl-ox)/ux; if (t1 > t2) { t = t1; t1 = t2; t2 = t; } if (t1 > a) a = t1; if (t2 < b) b = t2; if (a > b) return Infinity; }
+  if (Math.abs(uy) < 1e-9) { if (oy < -hw || oy > hw) return Infinity; }
+  else { t1 = (-hw-oy)/uy; t2 = (hw-oy)/uy; if (t1 > t2) { t = t1; t1 = t2; t2 = t; } if (t1 > a) a = t1; if (t2 < b) b = t2; if (a > b) return Infinity; }
+  if (Math.abs(dz) < 1e-9) { if (0 < p.z0 || 0 > p.z1) return Infinity; }
+  else { t1 = p.z0/dz; t2 = p.z1/dz; if (t1 > t2) { t = t1; t1 = t2; t2 = t; } if (t1 > a) a = t1; if (t2 < b) b = t2; if (a > b) return Infinity; }
+  return a > 0 ? a : Infinity;
+}
+function hitCyl(p, dx, dy, dz){
+  const A = dx*dx + dy*dy; if (A < 1e-12) return Infinity;
+  const ox = -p.x, oy = -p.y, B = 2*(ox*dx + oy*dy), C = ox*ox + oy*oy - p.r*p.r, D = B*B - 4*A*C;
+  if (D < 0) return Infinity;
+  const t = (-B - Math.sqrt(D)) / (2*A); if (t <= 0) return Infinity;
+  const z = t*dz; return (z >= p.z0 && z <= p.z1) ? t : Infinity;
+}
+function hitSph(p, dx, dy, dz){
+  const ox = -p.x, oy = -p.y, oz = -p.z, B = ox*dx + oy*dy + oz*dz, C = ox*ox + oy*oy + oz*oz - p.r*p.r, D = B*B - C;
+  if (D < 0) return Infinity;
+  const t = -B - Math.sqrt(D); return t > 0 ? t : Infinity;
+}
+
+// A spinning 64-beam sensor, 0.25° azimuth steps, elevations +2° to -24.8° (HDL-64E-like, as in KITTI).
+function generateScan(k){
+  const egoX = k * 1.0, prims = [], gts = [], fpSites = [];
+  MOVERS.forEach((o, i) => {
+    const d = o.v * 0.1 * k, x = o.x + Math.cos(o.yaw)*d - egoX, y = o.y + Math.sin(o.yaw)*d;
+    if (Math.abs(x) > 110) { gts.push(null); return; }
+    gts.push({ cls:o.cls, x, y, z:G + o.h/2, l:o.l, w:o.w, h:o.h, yaw:o.yaw, pts:0 });
+    addMoverPrims(prims, o, x, y, i);
+  });
+  for (const s of STATIC) {
+    const x = s.x - egoX; if (x < -110 || x > 110) continue;
+    prims.push({ ...s, x, obj:-1 });
+    if (s.pole && x > 3 && x < XMAX - 3) fpSites.push([x, s.y]);
+  }
+  for (const p of prims) {
+    if (p.k === 'box') { p.c = Math.cos(p.yaw); p.s = Math.sin(p.yaw); p.rad = Math.hypot(p.l, p.w)/2; p.fn = hitBox; }
+    else { p.rad = p.r; p.fn = p.k === 'cyl' ? hitCyl : hitSph; }
+    const d = Math.hypot(p.x, p.y);
+    p.az = Math.atan2(p.y, p.x);
+    p.half = d > p.rad + .01 ? Math.asin(p.rad/d) + .004 : Math.PI;
+  }
+  const r = mulberry32(9000 + k), NB = 64, AZ = 1440, elev = [];
+  for (let b = 0; b < NB; b++) elev.push((2 - b*26.8/63) * Math.PI/180);
+  const out = [], obj = [], cand = [];
+  for (let a = 0; a < AZ; a++) {
+    const az = a/AZ*2*Math.PI - Math.PI, ca = Math.cos(az), sa = Math.sin(az);
+    cand.length = 0;
+    for (const p of prims) { let d = az - p.az; d -= Math.round(d/(2*Math.PI))*2*Math.PI; if (Math.abs(d) <= p.half) cand.push(p); }
+    for (let b = 0; b < NB; b++) {
+      const ce = Math.cos(elev[b]), dz = Math.sin(elev[b]), dx = ce*ca, dy = ce*sa;
+      let tb = dz < -1e-6 ? G/dz : Infinity, hp = null;
+      for (let j = 0; j < cand.length; j++) { const p = cand[j], t = p.fn(p, dx, dy, dz); if (t < tb) { tb = t; hp = p; } }
+      if (!(tb < 95) || r() < .05) continue;
+      const t = tb + gauss(r)*.015, x = dx*t, y = dy*t, z = dz*t;
+      if (x*x + y*y < 2.7*2.7) continue;
+      const it = hp ? hp.refl + (r()-.5)*.08 : groundRefl(x + egoX, y) + (r()-.5)*.06;
+      out.push(x, y, z, clamp(it, 0, 1)); obj.push(hp ? hp.obj : -1);
+    }
+  }
+  const N = out.length/4, pts = new Float32Array(out), objA = new Int16Array(obj), inRange = new Uint8Array(N);
+  let nIn = 0;
+  for (let i = 0; i < N; i++) {
+    const x = pts[i*4], y = pts[i*4+1], z = pts[i*4+2];
+    if (x >= XMIN && x < XMAX && y >= YMIN && y < YMAX && z >= ZMIN && z < ZMAX) {
+      inRange[i] = 1; nIn++;
+      if (objA[i] >= 0 && gts[objA[i]]) gts[objA[i]].pts++;
+    }
+  }
+  return { k, N, nIn, pts, obj:objA, inRange, gts, fpSites };
+}
+
+// ---------- Stage 2: voxelization into pillars (what the CUDA voxelization kernels do) ----------
+function voxelize(S){
+  const cell = new Int32Array(GX*GY).fill(-1), pillars = [];
+  let overflow = 0;
+  for (let i = 0; i < S.N; i++) {
+    if (!S.inRange[i]) continue;
+    const ix = Math.floor((S.pts[i*4] - XMIN)/VS), iy = Math.floor((S.pts[i*4+1] - YMIN)/VS), key = iy*GX + ix;
+    let p = cell[key];
+    if (p < 0) { if (pillars.length >= MAXV) continue; p = pillars.length; cell[key] = p; pillars.push({ ix, iy, idx:[] }); }
+    if (pillars[p].idx.length < MAXP) pillars[p].idx.push(i); else overflow++;
+  }
+  for (const pl of pillars) {
+    let mx = 0, my = 0, mz = 0, zt = -9;
+    for (const i of pl.idx) { mx += S.pts[i*4]; my += S.pts[i*4+1]; const z = S.pts[i*4+2]; mz += z; if (z > zt) zt = z; }
+    const n = pl.idx.length; mx /= n; my /= n; mz /= n;
+    pl.ztop = zt; pl.cx = XMIN + (pl.ix + .5)*VS; pl.cy = YMIN + (pl.iy + .5)*VS;
+    const f = new Float32Array(MAXP*10);
+    pl.idx.forEach((i, row) => {
+      const x = S.pts[i*4], y = S.pts[i*4+1], z = S.pts[i*4+2];
+      f.set([x, y, z, S.pts[i*4+3], x-mx, y-my, z-mz, x-pl.cx, y-pl.cy, z-CZ], row*10);
+    });
+    pl.f = f;
+  }
+  return { cell, pillars, overflow };
+}
+
+// ---------- Stage 3: pillar feature net (illustrative weights; the arithmetic is real) ----------
+const FSCALE = [1/69.12, 1/39.68, .5, 1, 1/.16, 1/.16, 1, 1/.16, 1/.16, .5];
+const W = new Float32Array(640), BIAS = new Float32Array(64);
+(() => {
+  const r = mulberry32(11);
+  for (let c = 4; c < 64; c++) { for (let j = 0; j < 10; j++) W[c*10+j] = gauss(r)*.55; BIAS[c] = gauss(r)*.12; }
+  W[0*10+2] = 1; BIAS[0] = -G*.5;   // channel 0 responds to height above ground
+  W[1*10+3] = 1;                    // channel 1: intensity
+  W[2*10+6] = 1;                    // channel 2: height above the pillar's mean point
+  W[3*10+7] = 1;                    // channel 3: forward offset from the pillar center
+})();
+const CH_NAMES = ['height above ground', 'intensity', 'height above pillar mean', 'forward offset in pillar'];
+const chName = c => c < 4 ? CH_NAMES[c] : 'random weights';
+function pfnRow(f, off, out){
+  for (let c = 0; c < 64; c++) {
+    let s = BIAS[c];
+    for (let j = 0; j < 10; j++) s += W[c*10+j] * f[off+j] * FSCALE[j];
+    out[c] = s > 0 ? s : 0;
+  }
+}
+function runPFN(V){
+  const P = V.pillars.length, out = new Float32Array(P*64), tmp = new Float32Array(64);
+  V.pillars.forEach((pl, p) => {
+    for (let row = 0; row < pl.idx.length; row++) {
+      pfnRow(pl.f, row*10, tmp);
+      for (let c = 0; c < 64; c++) if (tmp[c] > out[p*64+c]) out[p*64+c] = tmp[c];
+    }
+  });
+  const scale = new Float32Array(64), vals = new Float32Array(P);
+  for (let c = 0; c < 64; c++) {
+    for (let p = 0; p < P; p++) vals[p] = out[p*64+c];
+    const sorted = Array.from(vals).filter(v => v > 0).sort((a, b) => a - b);
+    scale[c] = sorted.length ? Math.max(sorted[Math.floor(sorted.length*.98)], 1e-6) : 1;
+  }
+  return { out, scale };
+}
+
+// ---------- Stage 5: one real 3×3 convolution (stride 2) on one channel ----------
+const KERNEL = [-1,-1,-1,-1,8,-1,-1,-1,-1];
+function bevChannel(V, F, c){
+  const a = new Float32Array(GX*GY);
+  V.pillars.forEach((pl, p) => { a[pl.iy*GX + pl.ix] = Math.min(1, F.out[p*64+c]/F.scale[c]); });
+  return a;
+}
+function convAt(inp, cx, cy){
+  let s = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const x = cx + dx, y = cy + dy;
+    if (x >= 0 && y >= 0 && x < GX && y < GY) s += KERNEL[(dy+1)*3 + dx+1] * inp[y*GX + x];
+  }
+  return s > 0 ? s : 0;
+}
+function runConv(inp){
+  const out = new Float32Array(FX*FY);
+  for (let oy = 0; oy < FY; oy++) for (let ox = 0; ox < FX; ox++) out[oy*FX + ox] = convAt(inp, 2*ox, 2*oy);
+  const nz = Array.from(out).filter(v => v > 0).sort((a, b) => a - b);
+  return { out, scale: nz.length ? Math.max(nz[Math.floor(nz.length*.98)], 1e-6) : 1 };
+}
+
+// ---------- Stage 6: detection head scores (simulated around the scene's real objects) ----------
+function simulateHead(S){
+  const r = mulberry32(500 + S.k);
+  const score = [0,1,2].map(() => new Float32Array(FX*FY)), src = [0,1,2].map(() => new Int16Array(FX*FY).fill(-1)), orient = [0,1,2].map(() => new Uint8Array(FX*FY));
+  for (let c = 0; c < 3; c++) for (let i = 0; i < FX*FY; i++) score[c][i] = r()*.035;
+  const splat = (c, x, y, peak, sigma, s, o) => {
+    const fx0 = Math.floor((x - XMIN)/FS), fy0 = Math.floor((y - YMIN)/FS), rad = Math.ceil(3*sigma/FS);
+    for (let fy = fy0 - rad; fy <= fy0 + rad; fy++) for (let fx = fx0 - rad; fx <= fx0 + rad; fx++) {
+      if (fx < 0 || fy < 0 || fx >= FX || fy >= FY) continue;
+      const px = XMIN + (fx+.5)*FS, py = YMIN + (fy+.5)*FS, d2 = (px-x)**2 + (py-y)**2;
+      const v = peak * Math.exp(-d2/(2*sigma*sigma)), i = fy*FX + fx;
+      if (v > score[c][i]) { score[c][i] = v; src[c][i] = s; orient[c][i] = o; }
+    }
+  };
+  S.gts.forEach((g, o) => {
+    if (!g || g.pts < 4 || g.x < XMIN || g.x >= XMAX || Math.abs(g.y) >= YMAX) return;
+    const full = g.cls === 0 ? 120 : 40;
+    const peak = Math.min(.97, .5 + .46*Math.min(1, g.pts/full) + (r()-.5)*.04);
+    splat(g.cls, g.x, g.y, peak, g.cls === 0 ? .5 : .3, o, Math.abs(Math.sin(g.yaw)) > .707 ? 1 : 0);
+  });
+  S.fpSites.slice(0, 4).forEach(([x, y], i) => splat(1, x, y, .14 + r()*.2, .26, -2, i % 2));
+  return { score, src, orient };
+}
+
+// ---------- Stage 7: decode anchors + nudges into boxes ----------
+function makeCandidates(S, H){
+  const r = mulberry32(1000 + S.k), list = [];
+  for (let c = 0; c < 3; c++) for (let i = 0; i < FX*FY; i++) {
+    const s = H.score[c][i]; if (s < .1) continue;
+    const fx = i % FX, fy = Math.floor(i / FX), x = XMIN + (fx+.5)*FS, y = YMIN + (fy+.5)*FS, o = H.src[c][i];
+    if (o >= 0) {
+      const g = S.gts[o], d = Math.hypot(x - g.x, y - g.y), j = .05 + .22*d;
+      list.push({ x:g.x + gauss(r)*j, y:g.y + gauss(r)*j, z:g.z + gauss(r)*.05, l:g.l*(1 + gauss(r)*.05), w:g.w*(1 + gauss(r)*.05), h:g.h*(1 + gauss(r)*.04), yaw:g.yaw + gauss(r)*.05, cls:c, score:s });
+    } else {
+      const a = ANCHORS[c*2 + H.orient[c][i]];
+      list.push({ x:x + gauss(r)*.08, y:y + gauss(r)*.08, z:ANCHOR_BOTTOM[c] + a[2]/2, l:a[0], w:a[1], h:a[2], yaw:a[3] + gauss(r)*.1, cls:c, score:s });
+    }
+  }
+  return list;
+}
+
+// ---------- Stage 8: NMS with rotated bird's-eye-view IoU ----------
+function corners(b){
+  const c = Math.cos(b.yaw), s = Math.sin(b.yaw), hl = b.l/2, hw = b.w/2;
+  return [[hl,hw],[-hl,hw],[-hl,-hw],[hl,-hw]].map(([u, v]) => [b.x + u*c - v*s, b.y + u*s + v*c]);
+}
+function polyArea(p){ let a = 0; for (let i = 0; i < p.length; i++) { const q = p[(i+1) % p.length]; a += p[i][0]*q[1] - q[0]*p[i][1]; } return Math.abs(a)/2; }
+function clipPoly(subject, clip){
+  let out = subject;
+  for (let i = 0; i < clip.length && out.length; i++) {
+    const A = clip[i], B = clip[(i+1) % clip.length], inp = out; out = [];
+    const side = p => (B[0]-A[0])*(p[1]-A[1]) - (B[1]-A[1])*(p[0]-A[0]);
+    for (let j = 0; j < inp.length; j++) {
+      const P = inp[j], Q = inp[(j+1) % inp.length], sp = side(P), sq = side(Q);
+      if (sp >= 0) out.push(P);
+      if ((sp >= 0) !== (sq >= 0)) { const t = sp/(sp - sq); out.push([P[0] + t*(Q[0]-P[0]), P[1] + t*(Q[1]-P[1])]); }
+    }
+  }
+  return out;
+}
+function iouBEV(a, b, ca, cb){
+  if (Math.hypot(a.x - b.x, a.y - b.y) > (Math.hypot(a.l, a.w) + Math.hypot(b.l, b.w))/2) return 0;
+  const inter = polyArea(clipPoly(ca, cb));
+  return inter / (a.l*a.w + b.l*b.w - inter);
+}
+function runNMS(cands, thr){
+  const order = cands.map((_, i) => i).sort((a, b) => cands[b].score - cands[a].score);
+  const cs = cands.map(corners), sup = new Uint8Array(cands.length), steps = [];
+  for (let a = 0; a < order.length; a++) {
+    const i = order[a]; if (sup[i]) continue;
+    const removed = [];
+    for (let b = a + 1; b < order.length; b++) {
+      const j = order[b];
+      if (!sup[j] && iouBEV(cands[i], cands[j], cs[i], cs[j]) >= thr) { sup[j] = 1; removed.push(j); }
+    }
+    steps.push({ keep:i, removed });
+  }
+  return steps;
+}
+
+
+// ---------- Pipeline schematic (drawn first, so it shows even if 3D can't start) ----------
+const WIRES = ['N×4', '40000×32×10', '40000×64', '64×496×432', '384×248×216', '3 tensors', 'K×9', 'M×9'];
+const GAPS = [92, 128, 92, 92, 92, 128, 92, 92];   // wider where a wire crosses the engine boundary
+function buildSchematic(){
+  const svg = $('#schem'), bw = 96, bh = 50, x0 = 16, top = 40, cy = top + bh/2;
+  const bx = []; let x = x0;
+  for (let i = 0; i < 8; i++) { bx.push(x); x += bw + GAPS[i]; }
+  const W = x + 70, H = top + bh + 36;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  let h = `<defs>
+    <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#FBFBF9"/><line class="hl" x1="0" y1="0" x2="0" y2="6"/></pattern>
+    <pattern id="hatch-red" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#F7E1DE"/><line class="hr" x1="0" y1="0" x2="0" y2="6"/></pattern>
+    <marker id="arr" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#16181B"/></marker>
+    <marker id="arr-r" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#C8261C"/></marker>
+  </defs>`;
+  const ex0 = bx[2] - 14, ex1 = bx[5] + bw + 14;
+  h += `<rect class="eng" x="${ex0}" y="${top - 26}" width="${ex1 - ex0}" height="${bh + 56}"/>`;
+  h += `<text class="engl" x="${ex0 + 10}" y="${top - 11}">TensorRT engine · built from the ONNX graph</text>`;
+  for (let i = 0; i < 8; i++) {
+    const xa = bx[i] + bw, xb = xa + GAPS[i];
+    h += `<path class="wire" data-w="${i}" d="M${xa} ${cy} H${xb - 1}" marker-end="url(#arr)"/>`;
+    h += `<text class="wl" data-w="${i}" x="${(xa + xb)/2}" y="${cy - 8}">${WIRES[i]}</text>`;
+  }
+  const tx = bx[7] + bw + GAPS[7];
+  h += `<circle class="term" cx="${tx + 5}" cy="${cy}" r="4.5"/><text class="terml" x="${tx + 15}" y="${cy + 4.5}">boxes</text>`;
+  STAGES.forEach((s, i) => {
+    const xx = bx[i];
+    h += `<g class="blk${s.runs === 'plugin' ? ' plugin' : ''}" data-i="${i}" tabindex="0" role="button" aria-label="Stage ${i + 1}: ${s.name}">`;
+    h += `<rect class="box" x="${xx}" y="${top}" width="${bw}" height="${bh}"/>`;
+    h += `<text class="num" x="${xx + 6}" y="${top + 13}">${i + 1}</text>`;
+    if (s.lines.length === 1) h += `<text class="nm" x="${xx + bw/2}" y="${cy + 6}" text-anchor="middle">${s.lines[0]}</text>`;
+    else h += `<text class="nm" x="${xx + bw/2}" y="${cy - 1}" text-anchor="middle">${s.lines[0]}</text><text class="nm" x="${xx + bw/2}" y="${cy + 14}" text-anchor="middle">${s.lines[1]}</text>`;
+    h += `<text class="run" x="${xx + bw/2}" y="${top + bh + 17}" text-anchor="middle">${RUNS[s.runs]}</text></g>`;
+  });
+  svg.innerHTML = h;
+  svg.querySelectorAll('.blk').forEach(g => {
+    const go = () => { if (ready) setStage(+g.dataset.i); };
+    g.addEventListener('click', go);
+    g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+  });
+}
+function markSchematic(i){
+  document.querySelectorAll('#schem .blk').forEach(g => g.classList.toggle('on', +g.dataset.i === i));
+  document.querySelectorAll('#schem .wire').forEach(w => { const on = +w.dataset.w === i; w.classList.toggle('on', on); w.setAttribute('marker-end', on ? 'url(#arr-r)' : 'url(#arr)'); });
+  document.querySelectorAll('#schem .wl').forEach(t => t.classList.toggle('on', +t.dataset.w === i));
+}
+buildSchematic();
+
+// ---------- Startup checks: say why 3D can't start instead of hanging ----------
+function fail(title, detail){
+  $('#loading').hidden = false;
+  $('#loading').innerHTML = `<div class="err"><b>${title}</b><br>${detail}</div>`;
+  $('#text').innerHTML = `<p class="aside">The walkthrough needs the 3D figure to run. The message on the left says what failed and how to fix it.</p>`;
+}
+if (typeof THREE === 'undefined') {
+  fail("The 3D library didn't load.", "This page loads three.js from <code>cdnjs.cloudflare.com</code>. A network filter, VPN or browser extension (ad or script blocker) is probably blocking it. Allow that site, or try another browser or network, then reload.");
+  return;
+}
+{
+  const c = document.createElement('canvas');
+  if (!(c.getContext('webgl2') || c.getContext('webgl') || c.getContext('experimental-webgl'))) {
+    fail("Your browser couldn't start WebGL.", "The 3D figure needs WebGL. Turn on hardware acceleration (Chrome: Settings → System → <i>Use graphics acceleration when available</i>; Safari and Firefox have similar settings), then restart the browser. Remote desktops and some virtual machines don't support WebGL at all.");
+    return;
+  }
+}
+
+// ---------- three.js scene (LiDAR frame: x forward, y left, z up) ----------
+const plate = $('#plate');
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ antialias:true }); }
+catch (e) { fail("Your browser couldn't start WebGL.", `The 3D figure needs WebGL, and creating it failed (${e.message}). Turn on hardware acceleration in your browser settings and restart the browser.`); return; }
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0xfbfbf9, 1);
+plate.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, .1, 700);
+
+class MiniOrbit {
+  constructor(cam, el){
+    this.cam = cam; this.el = el; this.target = new THREE.Vector3(); this.ptrs = new Map(); this.pinch = null; this.onUser = null;
+    el.style.touchAction = 'none';
+    el.addEventListener('contextmenu', e => e.preventDefault());
+    el.addEventListener('pointerdown', e => {
+      try { el.setPointerCapture(e.pointerId); } catch (_) {}
+      this.ptrs.set(e.pointerId, { x:e.clientX, y:e.clientY });
+      this.mode = (e.button === 2 || e.shiftKey) ? 'pan' : 'rotate';
+      if (this.ptrs.size === 2) this.pinch = this.pinchDist();
+    });
+    el.addEventListener('pointermove', e => {
+      const p = this.ptrs.get(e.pointerId); if (!p) return;
+      const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+      if (this.ptrs.size === 2) { const d = this.pinchDist(); if (this.pinch) this.dolly(this.pinch/d); this.pinch = d; this.pan(dx/2, dy/2); }
+      else if (this.mode === 'rotate') this.rotate(dx, dy); else this.pan(dx, dy);
+      if (this.onUser) this.onUser();
+    });
+    const up = e => { this.ptrs.delete(e.pointerId); if (this.ptrs.size < 2) this.pinch = null; };
+    el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+    el.addEventListener('wheel', e => { e.preventDefault(); this.dolly(Math.exp(e.deltaY*.0012)); if (this.onUser) this.onUser(); }, { passive:false });
+  }
+  pinchDist(){ const [a, b] = [...this.ptrs.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; }
+  offset(){ return this.cam.position.clone().sub(this.target); }
+  rotate(dx, dy){
+    const o = this.offset(), s = new THREE.Spherical().setFromVector3(o);
+    s.theta -= dx*.005; s.phi = clamp(s.phi - dy*.005, .05, Math.PI*.49);
+    o.setFromSpherical(s); this.cam.position.copy(this.target).add(o);
+  }
+  dolly(f){ const o = this.offset(); o.setLength(clamp(o.length()*f, 1, 400)); this.cam.position.copy(this.target).add(o); }
+  pan(dx, dy){
+    const dist = this.offset().length(), k = 2*dist*Math.tan(this.cam.fov*Math.PI/360)/(this.el.clientHeight || 1);
+    this.cam.updateMatrix();
+    const right = new THREE.Vector3().setFromMatrixColumn(this.cam.matrix, 0), upv = new THREE.Vector3().setFromMatrixColumn(this.cam.matrix, 1);
+    const mv = right.multiplyScalar(-dx*k).add(upv.multiplyScalar(dy*k));
+    this.cam.position.add(mv); this.target.add(mv);
+  }
+  update(){ this.cam.lookAt(this.target); }
+}
+const controls = new MiniOrbit(camera, renderer.domElement);
+controls.onUser = () => { tween = null; };
+
+const world = new THREE.Group(); world.rotation.x = -Math.PI/2; scene.add(world);
+const L = (x, y, z) => new THREE.Vector3(x, z, -y);
+scene.add(new THREE.AmbientLight(0xffffff, .78));
+const sun = new THREE.DirectionalLight(0xffffff, .45); sun.position.set(-30, 60, 25); scene.add(sun);
+
+const ego = new THREE.Mesh(new THREE.BoxGeometry(4.5, 1.9, 1.5), new THREE.MeshLambertMaterial({ color:0xe4e5e1 }));
+ego.position.set(-.4, 0, G + .75); world.add(ego);
+const egoEdges = new THREE.LineSegments(new THREE.EdgesGeometry(ego.geometry), new THREE.LineBasicMaterial({ color:0x16181b }));
+egoEdges.position.copy(ego.position); world.add(egoEdges);
+
+function boxEdges(x0, y0, z0, x1, y1, z1, color, opacity = 1){
+  const g = new THREE.EdgesGeometry(new THREE.BoxGeometry(x1-x0, y1-y0, z1-z0));
+  const m = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, transparent:opacity < 1, opacity }));
+  m.position.set((x0+x1)/2, (y0+y1)/2, (z0+z1)/2); return m;
+}
+const rangeBox = boxEdges(XMIN, YMIN, ZMIN, XMAX, YMAX, ZMAX, 0xc8261c); world.add(rangeBox);
+
+function gridLines(x0, x1, y0, y1, step, z, color, opacity){
+  const v = [];
+  for (let x = x0; x <= x1 + 1e-6; x += step) v.push(x, y0, z, x, y1, z);
+  for (let y = y0; y <= y1 + 1e-6; y += step) v.push(x0, y, z, x1, y, z);
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, transparent:true, opacity }));
+}
+const coarseGrid = gridLines(XMIN, XMAX, YMIN, YMAX, 1.6, G + .01, 0xb5b8b2, .6); world.add(coarseGrid);
+let fineGrid = null;
+
+let pointsObj = null;
+const pointMat = new THREE.PointsMaterial({ size:.14, vertexColors:true, sizeAttenuation:true });
+const selPtsMat = new THREE.PointsMaterial({ size:.2, color:0xc8261c, sizeAttenuation:true });
+let selPts = null, selBox = null;
+
+const pillarGeo = new THREE.BoxGeometry(1, 1, 1); pillarGeo.translate(0, 0, .5);
+const pillarMesh = new THREE.InstancedMesh(pillarGeo, new THREE.MeshLambertMaterial({ transparent:true, opacity:.92 }), MAXV);
+pillarMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); pillarMesh.frustumCulled = false; world.add(pillarMesh);
+
+function dataTex(w, h){
+  const t = new THREE.DataTexture(new Uint8Array(w*h*4), w, h, THREE.RGBAFormat);
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; return t;
+}
+const bevTex = dataTex(GX, GY), convTex = dataTex(FX, FY), headTex = dataTex(FX, FY);
+const bevPlane = new THREE.Mesh(new THREE.PlaneGeometry(XMAX - XMIN, YMAX - YMIN), new THREE.MeshBasicMaterial({ map:bevTex, transparent:true, opacity:1 }));
+bevPlane.position.set((XMIN + XMAX)/2, 0, G + .02); world.add(bevPlane);
+const bevFrame = boxEdges(XMIN, YMIN, G + .02, XMAX, YMAX, G + .025, 0x16181b); world.add(bevFrame);
+
+const stencil = new THREE.Group(); world.add(stencil);
+let patchOutline = null;
+const anchorGroup = new THREE.Group(); world.add(anchorGroup);
+const hotspotGroup = new THREE.Group(); world.add(hotspotGroup);
+function buildHotspotRings(){
+  hotspotGroup.clear();
+  const per = [[], [], []];
+  for (const h of hotspots) {
+    const r = h.c === 0 ? 1.6 : 1.1;
+    for (let a = 0; a < 40; a++) {
+      const t0 = a/40*2*Math.PI, t1 = (a + 1)/40*2*Math.PI;
+      per[h.c].push(h.x + r*Math.cos(t0), h.y + r*Math.sin(t0), G + .05, h.x + r*Math.cos(t1), h.y + r*Math.sin(t1), G + .05);
+    }
+  }
+  per.forEach((v, c) => {
+    if (!v.length) return;
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    hotspotGroup.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color:new THREE.Color(CLASS_HEX[c]) })));
+  });
+}
+let anchorLabels = [];
+const labelLayer = document.createElement('div'); labelLayer.className = 'labels'; plate.appendChild(labelLayer);
+const tmpV = new THREE.Vector3();
+function placeLabels(){
+  let show = anchorGroup.visible && anchorLabels.length;
+  if (show) { tmpV.set(anchorLabels[0].p[0], anchorLabels[0].p[1], G); world.localToWorld(tmpV); show = camera.position.distanceTo(tmpV) < 32; }
+  if (!show) { if (labelLayer.childElementCount) labelLayer.innerHTML = ''; return; }
+  if (labelLayer.childElementCount !== anchorLabels.length) labelLayer.innerHTML = anchorLabels.map(l => `<span class="lbl" style="border-color:${CLASS_HEX[l.c]};color:${CLASS_HEX[l.c]}">${l.t}</span>`).join('');
+  const w = plate.clientWidth, h = plate.clientHeight;
+  anchorLabels.forEach((l, i) => {
+    tmpV.set(l.p[0], l.p[1], l.p[2]); world.localToWorld(tmpV); tmpV.project(camera);
+    const el = labelLayer.children[i], vis = tmpV.z < 1 && Math.abs(tmpV.x) < 1.1 && Math.abs(tmpV.y) < 1.1;
+    el.style.display = vis ? '' : 'none';
+    if (vis) el.style.transform = `translate(${(tmpV.x*.5 + .5)*w + (l.dx || 0)}px, ${(-tmpV.y*.5 + .5)*h + l.dy}px) translate(${l.align === 'right' ? '-100%' : l.align === 'left' ? '0' : '-50%'}, -100%)`;
+  });
+}
+let boxLines = null;
+
+function boxesObject(items){
+  const E = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+  const pos = new Float32Array(items.length*13*6), col = new Float32Array(items.length*13*6);
+  let o = 0;
+  const put = (p, c) => { pos.set(p, o); col.set(c, o); o += 3; };
+  for (const { b, rgb } of items) {
+    const cs = corners(b), z0 = b.z - b.h/2, z1 = b.z + b.h/2;
+    const v = [...cs.map(([x, y]) => [x, y, z0]), ...cs.map(([x, y]) => [x, y, z1])];
+    for (const [i, j] of E) { put(v[i], rgb); put(v[j], rgb); }
+    const fx = b.x + Math.cos(b.yaw)*b.l/2, fy = b.y + Math.sin(b.yaw)*b.l/2;
+    put([b.x, b.y, z1], rgb); put([fx, fy, z1], rgb);   // heading tick
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors:true }));
+}
+
+// ---------- State ----------
+let k = 0, stage = 0, channel = 0, scoreThr = .1, iouThr = .01, convMode = 'in', hotspots = [];
+let S, V, F, H, cands, steps, sel = 0, focus = null, headCell = null, bevIn = null, convRes = null;
+let nmsShown = 0, nmsTimer = null, stencilTimer = null, stencilJ = 0, scatterAnim = null, headZoom = false;
+
+function rebuild(){
+  S = generateScan(k);
+  V = voxelize(S);
+  F = runPFN(V);
+  H = simulateHead(S);
+  cands = makeCandidates(S, H);
+  steps = runNMS(cands.filter(c => c.score >= scoreThr), iouThr);
+  let best = -1, bestN = -1;
+  V.pillars.forEach((pl, p) => { const n = pl.idx.filter(i => S.obj[i] === 0).length; if (n > bestN) { bestN = n; best = p; } });
+  sel = Math.max(0, best);
+  focus = S.gts.find(g => g && g.cls === 0 && g.x > 5 && g.x < XMAX - 5 && g.pts > 20) || S.gts.find(g => g);
+  headCell = [clamp(Math.floor((focus.x - XMIN)/FS), 0, FX-1), clamp(Math.floor((focus.y - YMIN)/FS), 0, FY-1)];
+  hotspots = findHotspots();
+  { const h = nearestHotspot(headCell[0], headCell[1], 8); if (h) headCell = [h.fx, h.fy]; }
+  buildPoints();
+  updateChannel();
+  updateHeadTex();
+  $('#tb-scan').textContent = String(k + 1).padStart(3, '0');
+}
+
+function buildPoints(){
+  if (pointsObj) { world.remove(pointsObj); pointsObj.geometry.dispose(); }
+  const g = new THREE.BufferGeometry(), pos = new Float32Array(S.N*3);
+  for (let i = 0; i < S.N; i++) { pos[i*3] = S.pts[i*4]; pos[i*3+1] = S.pts[i*4+1]; pos[i*3+2] = S.pts[i*4+2]; }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(S.N*3), 3));
+  pointsObj = new THREE.Points(g, pointMat); world.add(pointsObj);
+}
+function colorPoints(mode){
+  const c = pointsObj.geometry.attributes.color.array;
+  for (let i = 0; i < S.N; i++) {
+    let rgb = mix([160,164,168], INK, (S.pts[i*4+2] - G + .15)/3);
+    if (mode !== 'all' && !S.inRange[i]) rgb = [222,223,219];
+    if (mode === 'dim') rgb = mix(rgb, PAPER, .55);
+    c[i*3] = rgb[0]/255; c[i*3+1] = rgb[1]/255; c[i*3+2] = rgb[2]/255;
+  }
+  pointsObj.geometry.attributes.color.needsUpdate = true;
+}
+
+const tmpM = new THREE.Matrix4(), tmpC = new THREE.Color();
+function layoutPillars(heightScale = 1, colorBy = 'count'){
+  pillarMesh.count = V.pillars.length;
+  V.pillars.forEach((pl, p) => {
+    const h = Math.max(.12, pl.ztop - G) * heightScale;
+    tmpM.makeScale(VS*.9, VS*.9, h); tmpM.setPosition(pl.cx, pl.cy, G);
+    pillarMesh.setMatrixAt(p, tmpM);
+    const rgb = colorBy === 'count' ? mix([196,198,194], INK, (pl.idx.length - 1)/31) : mix([222,223,219], INK, F.out[p*64 + channel]/F.scale[channel]);
+    tmpC.setRGB(rgb[0]/255, rgb[1]/255, rgb[2]/255);
+    pillarMesh.setColorAt(p, tmpC);
+  });
+  pillarMesh.instanceMatrix.needsUpdate = true;
+  if (pillarMesh.instanceColor) pillarMesh.instanceColor.needsUpdate = true;
+}
+
+function buildSelection(){
+  if (selPts) { world.remove(selPts); selPts.geometry.dispose(); }
+  if (selBox) world.remove(selBox);
+  if (fineGrid) world.remove(fineGrid);
+  const pl = V.pillars[sel];
+  const pos = new Float32Array(pl.idx.length*3);
+  pl.idx.forEach((i, r) => { pos[r*3] = S.pts[i*4]; pos[r*3+1] = S.pts[i*4+1]; pos[r*3+2] = S.pts[i*4+2]; });
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  selPts = new THREE.Points(g, selPtsMat); world.add(selPts);
+  const x0 = XMIN + pl.ix*VS, y0 = YMIN + pl.iy*VS;
+  selBox = boxEdges(x0, y0, ZMIN, x0 + VS, y0 + VS, ZMAX, 0xc8261c); world.add(selBox);
+  const n = 18;
+  fineGrid = gridLines(x0 - n*VS, x0 + (n+1)*VS, y0 - n*VS, y0 + (n+1)*VS, VS, G + .015, 0x8f9398, .55); world.add(fineGrid);
+}
+
+function fillTex(tex, w, h, colorAt){
+  const d = tex.image.data;
+  for (let i = 0; i < w*h; i++) { const c = colorAt(i); d[i*4] = c[0]; d[i*4+1] = c[1]; d[i*4+2] = c[2]; d[i*4+3] = 255; }
+  tex.needsUpdate = true;
+}
+const inkCell = v => v > 0 ? mix([212,213,209], INK, v) : PAPER;
+function updateChannel(){
+  bevIn = bevChannel(V, F, channel);
+  fillTex(bevTex, GX, GY, i => inkCell(bevIn[i]));
+  convRes = runConv(bevIn);
+  fillTex(convTex, FX, FY, i => inkCell(Math.min(1, convRes.out[i]/convRes.scale)));
+}
+function bestClass(i){ const a = H.score[0][i], b = H.score[1][i], c = H.score[2][i]; return a >= b && a >= c ? 0 : b >= c ? 1 : 2; }
+// Hotspots: local maxima of the best-class score that clear the 0.10 threshold
+function findHotspots(){
+  const m = new Float32Array(FX*FY);
+  for (let i = 0; i < FX*FY; i++) m[i] = H.score[bestClass(i)][i];
+  const out = [];
+  for (let fy = 1; fy < FY - 1; fy++) for (let fx = 1; fx < FX - 1; fx++) {
+    const i = fy*FX + fx, v = m[i]; if (v < .1) continue;
+    let peak = true;
+    for (let dy = -1; dy <= 1 && peak; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const u = m[i + dy*FX + dx];
+      if (u > v || (u === v && (dy < 0 || (dy === 0 && dx < 0)))) { peak = false; break; }
+    }
+    if (peak) out.push({ fx, fy, c:bestClass(i), s:v, x:XMIN + (fx + .5)*FS, y:YMIN + (fy + .5)*FS });
+  }
+  return out.sort((a, b) => b.s - a.s);
+}
+function nearestHotspot(fx, fy, maxCells){
+  let best = null, bd = maxCells*maxCells;
+  for (const h of hotspots) { const d = (h.fx - fx)**2 + (h.fy - fy)**2; if (d <= bd) { bd = d; best = h; } }
+  return best;
+}
+function updateHeadTex(){
+  fillTex(headTex, FX, FY, i => { const c = bestClass(i); return mix(PAPER, CLASS_RGB[c], Math.pow(clamp(H.score[c][i]/.95, 0, 1), .85)); });
+}
+
+function anchorScore(j, cell){ const c = Math.floor(j/2), base = H.score[c][cell]; return (j % 2) === H.orient[c][cell] ? base : base*.4; }
+function buildAnchors(){
+  anchorGroup.clear(); labelLayer.innerHTML = ''; anchorLabels = [];
+  if (!headCell) return;
+  const [fx, fy] = headCell, x = XMIN + (fx+.5)*FS, y = YMIN + (fy+.5)*FS, cell = fy*FX + fx;
+  anchorGroup.add(boxEdges(XMIN + fx*FS, YMIN + fy*FS, G + .02, XMIN + (fx+1)*FS, YMIN + (fy+1)*FS, G + .03, 0xc8261c));
+  // Only the winning anchor: the template the head scores highest at this position
+  const scores = ANCHORS.map((_, j) => anchorScore(j, cell)), j = scores.indexOf(Math.max(...scores));
+  if (scores[j] < .1) return;
+  const a = ANCHORS[j], c = Math.floor(j/2), z0 = ANCHOR_BOTTOM[c], rgb = rgb01(CLASS_RGB[c]);
+  anchorGroup.add(boxesObject([
+    { b:{ x, y, z:z0 + a[2]/2, l:a[0], w:a[1], h:a[2], yaw:a[3] }, rgb },
+    { b:{ x, y, z:G + .03, l:a[0], w:a[1], h:0, yaw:a[3] }, rgb },
+  ]));
+  if (z0 > G + .1) {
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute([x, y, z0, x, y, G + .03], 3));
+    anchorGroup.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color:0x5f646a })));
+  }
+  anchorLabels = [{ t:`${CLASSES[c].toLowerCase()} anchor, ${j % 2 ? '90°' : '0°'} · ${scores[j].toFixed(2)}${z0 > G + .1 ? ' · floats 1.1 m up' : ''}`, c, p:[x, y, z0 + a[2]], dy:-6 }];
+}
+
+function activeCands(){ return cands.filter(c => c.score >= scoreThr); }
+function drawBoxes(mode){
+  if (boxLines) { world.remove(boxLines); boxLines.geometry.dispose(); boxLines = null; }
+  const list = activeCands();
+  let items;
+  if (mode === 'decode') {
+    items = list.map(b => ({ b, rgb:rgb01(mix(PAPER, CLASS_RGB[b.cls], .3 + .7*b.score)) }));
+  } else {
+    const kept = new Set(), gone = new Set();
+    for (let s = 0; s < nmsShown; s++) { kept.add(steps[s].keep); steps[s].removed.forEach(j => gone.add(j)); }
+    const live = nmsShown > 0 && nmsShown < steps.length, cur = live ? steps[nmsShown - 1] : null;
+    const justGone = new Set(cur ? cur.removed : []);
+    items = [];
+    list.forEach((b, i) => {
+      if (justGone.has(i)) items.push({ b, rgb:rgb01([236,160,150]) });
+      else if (cur && cur.keep === i) items.push({ b, rgb:rgb01(RED) });
+      else if (kept.has(i)) items.push({ b, rgb:rgb01(CLASS_RGB[b.cls]) });
+      else if (!gone.has(i)) items.push({ b, rgb:rgb01(mix(PAPER, CLASS_RGB[b.cls], .3)) });
+    });
+  }
+  boxLines = boxesObject(items); world.add(boxLines);
+}
+
+function buildStencil(){
+  stencil.clear();
+  if (patchOutline) { world.remove(patchOutline); patchOutline = null; }
+  const m = Math.floor((focus.x - XMIN)/VS/2) - 6, n = Math.floor((focus.y - YMIN)/VS/2) - 6;
+  focus.ix0 = clamp(2*m - 1, 1, GX - 25); focus.iy0 = clamp(2*n - 1, 1, GY - 25);
+  const x0 = XMIN + focus.ix0*VS, y0 = YMIN + focus.iy0*VS;
+  patchOutline = boxEdges(x0, y0, G + .03, x0 + 24*VS, y0 + 24*VS, G + .035, 0x16181b); world.add(patchOutline);
+  stencil.add(boxEdges(0, 0, 0, 3*VS, 3*VS, .06, 0xc8261c));
+  placeStencil();
+}
+function placeStencil(){
+  const ox = stencilJ % 11, oy = Math.floor(stencilJ / 11);
+  stencil.position.set(XMIN + (focus.ix0 + 2*ox)*VS, YMIN + (focus.iy0 + 2*oy)*VS, G + .04);
+}
+
+// ---------- Camera ----------
+function preset(){
+  const id = STAGES[stage].id;
+  if (id === 'points') return [L(-34, -30, 30), L(16, 0, -2)];
+  if (id === 'pillars') return [L(3, -19, 13), L(19, -1, G)];
+  if (id === 'pfn') { const pl = V.pillars[sel]; return [L(pl.cx - 4.5, pl.cy - 5.5, G + 4.5), L(pl.cx, pl.cy, G + .7)]; }
+  if (id === 'head' && headZoom) { const x = XMIN + (headCell[0] + .5)*FS, y = YMIN + (headCell[1] + .5)*FS; return [L(x - 7, y - 5.5, G + 5.5), L(x + .3, y, G + .4)]; }
+  if (id === 'scatter' || id === 'head') return [L(28, 0, 92), L(34.56, 0, G)];
+  if (id === 'backbone') { const cx = XMIN + (focus.ix0 + 12)*VS, cy = YMIN + (focus.iy0 + 12)*VS; return [L(cx - 4.2, cy, G + 6.2), L(cx + .4, cy, G)]; }
+  return [L(-5, -22, 20), L(25, 0, G)];
+}
+function flyTo(instant){
+  const [p, t] = preset();
+  if (RM || instant) { camera.position.copy(p); controls.target.copy(t); tween = null; return; }
+  tween = { p0:camera.position.clone(), t0:controls.target.clone(), p1:p, t1:t, start:performance.now(), dur:950 };
+}
+
+// ---------- Stage text ----------
+const row = (role, shape, name, w = false) => `<tr${w ? ' class="w"' : ''}><td class="role">${role}</td><td class="sh">${shape}</td><td class="nm">${name}</td></tr>`;
+const shapes = rows => `<div class="shapes"><table>${rows.join('')}</table></div><p class="legend">Black: features, new every scan. <i>Blue: weights, fixed after training.</i></p>`;
+const chCtl = () => `<div class="ctl"><label for="ch">Feature channel <b id="ch-l">${channel} · ${chName(channel)}</b></label><input id="ch" type="range" min="0" max="63" step="1" value="${channel}"></div>`;
+const ABOUT = `<p class="about"><b>About this figure.</b> The street and the LiDAR scan are generated in your browser. The grid, the 40,000-slot padding, every tensor shape, the anchors and the thresholds follow CUDA-PointPillars' KITTI configuration. The pillar-feature weights are illustrative and the head's scores are simulated around the scene's real objects, so the values show the mechanics, not a trained model's output. Stage details were checked against the source of NVIDIA's <a href="https://github.com/NVIDIA-AI-IOT/CUDA-PointPillars/tree/ce7e2bd694c90207435c8751d61cdb38d48a9f4c">CUDA-PointPillars</a> (NVIDIA-AI-IOT, Apache-2.0) at commit ce7e2bd, December 2023.</p>`;
+function decStat(){
+  const list = activeCands(), by = [0,1,2].map(c => list.filter(b => b.cls === c).length);
+  return `${fmt(list.length)} boxes: ${by[0]} car, ${by[1]} pedestrian, ${by[2]} cyclist`;
+}
+function nmsLine(){
+  const list = activeCands(), M = steps.length;
+  if (nmsShown > 0 && nmsShown < M) {
+    const cur = steps[nmsShown - 1], b = list[cur.keep];
+    return `Step ${nmsShown} of ${M}: keep the ${CLASSES[b.cls].toLowerCase()} box scored ${b.score.toFixed(2)} (red), delete the ${cur.removed.length} overlapping it (pink).`;
+  }
+  return nmsShown >= M ? `${fmt(list.length)} candidates reduced to ${M} detections.` : 'Press Run to step through it.';
+}
+
+function renderText(){
+  const id = STAGES[stage].id, s = STAGES[stage], P = V.pillars.length;
+  let h = `<p class="runs">${RUNS_LONG[s.runs]}</p><h2><span class="n">${String(stage + 1).padStart(2, '0')}</span>${s.name}</h2>`;
+  if (id === 'points') {
+    h += `<p>One sweep of a spinning sensor with 64 lasers. Every dot is a return: a position in meters and an intensity, meaning how strongly the surface reflected. This scan has ${fmt(S.N)} of them. The next one will have a different count, because what the lasers hit keeps changing.</p>
+      <p>That changing count is the first problem PointPillars has to solve. GPU code, and TensorRT especially, wants to know its sizes in advance.</p>
+      <p class="aside">The red box is the slice of the world this KITTI model looks at: 69 m ahead, 40 m to either side, 4 m tall. The ${fmt(S.N - S.nIn)} returns outside it are dropped.</p>
+      ${shapes([row('out', `[${fmt(S.N)}, 4]`, 'points: x, y, z, intensity')])}
+      <div class="row"><button class="btn" id="nx2" type="button">Next scan</button></div>`;
+  } else if (id === 'pillars') {
+    const pl = V.pillars[sel];
+    h += `<p>The ground is cut into 0.16 m squares, 214,272 of them. Any square containing a return becomes a pillar: a column with no height limit, so height stays in the data instead of becoming another grid axis.</p>
+      <p>Pillars are packed into a buffer with a fixed 40,000 slots, each with room for 32 points. This scan fills ${fmt(P)} slots. The rest are zeros, and one integer tells the engine where the real data stops. That is how a scan of unknown size becomes a tensor of known size.</p>
+      <p class="aside">Each point also grows from 4 numbers to 10 here. It records its offset from the pillar's average point and from the pillar's center, so later layers can see the shape inside the column.</p>
+      <p class="aside">It takes three small kernels: one bins points into squares, one packs the occupied squares into slots, and one computes the 10 numbers and writes them in FP16, because the engine is built to run in half precision. When a square holds more than 32 points the extras are dropped, and which ones survive depends on which GPU threads got there first.</p>
+      ${shapes([row('in', `[${fmt(S.nIn)}, 4]`, 'points in range, FP32'), row('out', '[40000, 32, 10]', 'voxels, FP16'), row('', '[40000, 4]', 'voxel_idxs, int32: which square'), row('', '[1]', `voxel_num, int32: ${fmt(P)} this scan`)])}
+      <p class="legend">The three outputs are the ONNX model's inputs.</p>
+      <figure class="fig"><canvas id="slots" width="720" height="64" aria-label="Slot usage"></canvas><figcaption><b>Fig. 2a</b>${fmt(P)} of 40,000 slots used (${(P/MAXV*100).toFixed(1)}%). The rest is padding.</figcaption></figure>
+      <figure class="fig"><canvas id="ptable" width="720" height="300" aria-label="The selected pillar's table"></canvas><figcaption><b>Fig. 2b</b>The selected pillar, square (${pl.ix}, ${pl.iy}): ${pl.idx.length} of 32 rows hold points; grey rows are padding. Columns: x, y, z, intensity, offset from mean ×3, offset from center ×3. Click any pillar in the figure.</figcaption></figure>`;
+  } else if (id === 'pfn') {
+    h += `<p>A learned layer turns each point's 10 numbers into 64, using a 64 × 10 weight matrix followed by ReLU, which replaces negatives with zero. Then, for each of the 64, it keeps the largest value across the pillar's points.</p>
+      <p>The result is one 64-number summary per pillar, whether the pillar held 1 point or 32.</p>
+      <p class="aside">The engine runs this on all 40,000 slots, padding included. A few million wasted multiplies cost less than a shape TensorRT can't predict.</p>
+      ${shapes([row('in', '[40000, 32, 10]', 'voxels'), row('weights', '[64, 10]', 'linear layer; BatchNorm folded in', true), row('out', '[40000, 64]', 'pillar features')])}
+      <figure class="fig"><canvas id="pfnfig" width="720" height="330" aria-label="Pillar feature computation"></canvas><figcaption><b>Fig. 3a</b>The selected pillar: its points × weights, after ReLU, then the max down each column. Weights: blue positive, grey negative.</figcaption></figure>
+      ${chCtl()}
+      <p class="legend">Channels 0–3 are hand-set so you can read them (height, intensity, height above the pillar's mean, forward offset); 4–63 are random. A trained network learns its own. This toy takes the max over real points only.</p>`;
+  } else if (id === 'scatter') {
+    const pz = (100 - P/(GX*GY)*100).toFixed(1);
+    h += `<p>Each pillar's 64 numbers are written into its own square, which produces an image 496 squares tall and 432 wide, with 64 channels. Squares without a pillar stay zero: ${pz}% of them in this scan.</p>
+      <p>The address each pillar is written to comes from the data. TensorRT's built-in layers handle that kind of write badly, so CUDA-PointPillars cuts this step out of the ONNX graph and drops in a custom node, PPScatterPlugin, written in CUDA. The engine calls it like any other layer.</p>
+      <p class="aside">The plugin's code lives in a separate shared library, <code>libpointpillar_core.so</code>. It is passed to <code>trtexec --plugins</code> when the engine is built and loaded again at runtime, because the engine stores only the plugin's name and settings, not its code. It writes FP16 in TensorRT's channel-interleaved HWC8 layout, so the first convolution can read the result directly.</p>
+      ${shapes([row('in', '[40000, 64]', 'pillar features'), row('', '[40000, 4], [1]', 'voxel_idxs, voxel_num'), row('weights', 'none', 'pure data movement', true), row('out', '[1, 64, 496, 432]', "bird's-eye-view grid, FP16")])}
+      ${chCtl()}
+      <div class="row"><button class="btn" id="replay" type="button">Replay the scatter</button></div>`;
+  } else if (id === 'backbone') {
+    h += `<p>From here on, the LiDAR scan is an image and the network is an ordinary 2D convolutional network. Three blocks of 3 × 3 convolutions each halve the resolution and widen the channels. Their outputs are scaled back to 248 × 216 and stacked into 384 channels.</p>
+      <p>About 4.8 million of the model's weights are here. Fixed shapes and dense arithmetic are what TensorRT is built for: it fuses each convolution with its normalization and activation, and benchmarks kernel variants on the actual GPU to pick the fastest. The engine is built with <code>--fp16</code>, so TensorRT may run these layers in half precision wherever that is faster.</p>
+      ${shapes([row('in', '[1, 64, 496, 432]', "bird's-eye-view grid"), row('weights', '≈ 4.8 M', '16 convs, 3 upsampling convs', true), row('out', '[1, 384, 248, 216]', 'backbone features')])}
+      <figure class="fig"><svg class="pyr" viewBox="0 0 448 186" role="img" aria-label="Backbone feature map sizes">
+        <rect x="12" y="20" width="6" height="128"/>
+        <text class="lb" x="8" y="166">in</text><text class="l" x="8" y="178">64×496×432</text>
+        <path d="M18 84 H80"/>
+        <rect x="80" y="52" width="6" height="64"/>
+        <text class="lb" x="62" y="132">block 1 · 4 convs</text><text class="l" x="62" y="144">64×248×216</text>
+        <path d="M86 108 H133 V116 H180"/>
+        <rect x="180" y="100" width="12" height="32"/>
+        <text class="lb" x="174" y="152">block 2 · 6 convs</text><text class="l" x="174" y="164">128×124×108</text>
+        <path d="M192 128 H242 V132 H292"/>
+        <rect x="292" y="124" width="24" height="16"/>
+        <text class="lb" x="288" y="158">block 3 · 6 convs</text><text class="l" x="288" y="170">256×62×54</text>
+        <path d="M86 60 H380 M186 100 V84 H380 M304 124 V108 H380"/>
+        <text class="l" x="196" y="54">upsample to 248×216</text>
+        <rect class="cat" x="380" y="52" width="40" height="64"/>
+        <text class="lb" x="380" y="44">stacked</text><text class="l" x="372" y="132">384×248×216</text>
+      </svg><figcaption><b>Fig. 5a</b>Rectangle height is grid size; width is channel count.</figcaption></figure>
+      <figure class="fig"><div class="pair"><canvas id="pin" width="240" height="240" aria-label="Input patch"></canvas><canvas id="pout" width="240" height="240" aria-label="Output patch"></canvas></div><figcaption><b>Fig. 5b</b>One 3 × 3 convolution with stride 2 on one channel. Left: the outlined 24 × 24 patch of the grid. Right: the output, filled in as the red window moves two squares at a time. The filter is a hand-picked edge detector; a real layer mixes all 64 channels with learned weights.</figcaption></figure>
+      <div class="row"><button class="btn" id="cm-in" type="button" aria-pressed="${convMode === 'in'}">Show input grid</button><button class="btn" id="cm-out" type="button" aria-pressed="${convMode === 'out'}">Show conv output</button></div>
+      ${chCtl()}`;
+  } else if (id === 'head') {
+    const [fx, fy] = headCell, i = fy*FX + fx;
+    const scores = ANCHORS.map((_, j) => anchorScore(j, i)), top = scores.indexOf(Math.max(...scores));
+    const rows = ANCHORS.map((a, j) => {
+      const c = Math.floor(j/2), sc = scores[j];
+      return `<tr${j === top && sc >= .1 ? ' class="win"' : ''}><td><span class="sw" style="color:${CLASS_HEX[c]}"></span>${CLASSES[c]}</td><td>${a[0]}×${a[1]}×${a[2]}</td><td>${j % 2 ? '90°' : '0°'}</td><td class="num">${sc.toFixed(2)}</td></tr>`;
+    }).join('');
+    h += `<p>At each of 248 × 216 positions the model considers six template boxes, called anchors: car, pedestrian and cyclist sizes, each at 0° and 90°. For every anchor it outputs a raw score per class (decoding turns it into a 0–1 confidence), seven corrections to the box, and which end is the front.</p>
+      <p>The engine's work ends with these three tensors. They are still numbers on a grid, not boxes.</p>
+      <p class="aside">Anchors are only starting guesses, and they don't have to sit on the ground. This config puts the bottom of the pedestrian and cyclist anchors at −0.6 m in sensor coordinates, about 1.1 m above the road, so in the figure they float. The height correction in box_preds moves the final boxes down.</p>
+      ${shapes([row('in', '[1, 384, 248, 216]', 'backbone features'), row('weights', '1 × 1 convs', '384 → 18, 42 and 12 channels', true), row('out', '[1, 248, 216, 18]', 'cls_preds: 6 anchors × 3 classes'), row('', '[1, 248, 216, 42]', 'box_preds: 6 anchors × 7 corrections'), row('', '[1, 248, 216, 12]', 'dir_cls_preds: 6 anchors × 2')])}
+      <figure class="fig"><div class="hs-list">${hotspots.map((p, j) => `<button class="hs" type="button" data-j="${j}" aria-pressed="${p.fx === fx && p.fy === fy}"><span class="sw" style="color:${CLASS_HEX[p.c]}"></span><span class="hs-c">${CLASSES[p.c]}</span><span class="hs-s">${p.s.toFixed(2)}</span><span class="hs-p">${p.x.toFixed(1)} m ahead, ${Math.abs(p.y).toFixed(1)} m ${p.y >= 0 ? 'left' : 'right'}</span></button>`).join('')}</div><figcaption><b>Fig. 6b</b>Every hotspot in this scan, strongest first: the peaks that clear the 0.10 score threshold. Click one, or click it in the figure.</figcaption></figure>
+      <div class="row"><button class="btn" id="hz" type="button">${headZoom ? 'Show the whole grid' : 'Zoom to the selected anchors'}</button></div>
+      <figure class="fig" style="margin-top:18px"><table class="anch"><thead><tr><th>Anchor</th><th>Size (m)</th><th>Angle</th><th style="text-align:right">Score</th></tr></thead><tbody>${rows}</tbody></table><figcaption><b>Fig. 6a</b>The six anchors at position (${fx}, ${fy}), all centered on the same spot: six competing guesses for one location. The figure draws only the winner, bold here. Scores are simulated.</figcaption></figure>`;
+  } else if (id === 'decode') {
+    h += `<p>One GPU thread per anchor, 321,408 of them (248 × 216 × 6). Each anchor's three raw class scores go through a sigmoid to become 0–1 confidences, and the best class wins. If it clears the threshold, the seven corrections are applied: the center shifts in proportion to the anchor's size, length, width and height are scaled, and the heading comes from the angle correction plus the direction classifier, which says which end is the front. The result is a box in meters.</p>
+      <p>Each real object collects a cluster of near-identical boxes, because neighboring positions all see it. How many come out depends on the scene, so the size is data-dependent again, just like the input was.</p>
+      ${shapes([row('in', '[1, 248, 216, 72]', 'the three head tensors, together'), row('out', `[${fmt(activeCands().length)}, 9]`, 'x, y, z, l, w, h, heading, class, score')])}
+      <div class="ctl"><label for="thr">Score threshold <b id="thr-l">${scoreThr.toFixed(2)}</b></label><input id="thr" type="range" min="0.1" max="0.9" step="0.05" value="${scoreThr}"></div>
+      <p class="legend" id="dec-stat">${decStat()}. The KITTI config uses 0.10.</p>`;
+  } else if (id === 'nms') {
+    h += `<p>Non-maximum suppression keeps the best box in each cluster. Sort by score, keep the top box, delete everything that overlaps it, and repeat with the next box still standing.</p>
+      <p>Every keep-or-delete decision depends on the ones before it, so it can't happen in one parallel pass. CUDA-PointPillars splits the work: the GPU sorts the boxes by score, and a CUDA kernel tests every pair for overlap at once, recording the results in a bitmask. That mask is copied back to the CPU, which makes the final keep-or-delete sweep.</p>
+      <p class="aside">This config deletes a box that overlaps a kept box at all (IoU 0.01). Loosen it and watch duplicates survive.</p>
+      ${shapes([row('in', `[${fmt(activeCands().length)}, 9]`, 'candidate boxes'), row('out', `[${steps.length}, 9]`, 'detections')])}
+      <div class="row"><button class="btn" id="nms-run" type="button">Run</button><button class="btn" id="nms-end" type="button">Show result</button></div>
+      <p class="legend" id="nms-txt" style="margin-top:10px">${nmsLine()}</p>
+      <div class="ctl"><label for="iou">Overlap (IoU) threshold <b id="iou-l">${iouThr.toFixed(2)}</b></label><input id="iou" type="range" min="0.01" max="0.7" step="0.01" value="${iouThr}"></div>`;
+  }
+  h += ABOUT;
+  $('#text').innerHTML = h;
+  bindText();
+}
+
+function bindText(){
+  const id = STAGES[stage].id;
+  const ch = $('#ch');
+  if (ch) ch.addEventListener('input', () => {
+    channel = +ch.value; $('#ch-l').textContent = `${channel} · ${chName(channel)}`;
+    updateChannel();
+    if (id === 'pfn') { layoutPillars(1, 'feat'); drawPFN(); }
+    if (id === 'backbone') drawPatches();
+    updateCaption();
+  });
+  if (id === 'points') $('#nx2').addEventListener('click', nextScan);
+  if (id === 'pillars') { drawSlots(); drawTable(); }
+  if (id === 'pfn') drawPFN();
+  if (id === 'scatter') $('#replay').addEventListener('click', startScatter);
+  if (id === 'backbone') {
+    $('#cm-in').addEventListener('click', () => { convMode = 'in'; applyConvMode(); });
+    $('#cm-out').addEventListener('click', () => { convMode = 'out'; applyConvMode(); });
+    drawPatches();
+  }
+  if (id === 'head') $('#hz').addEventListener('click', () => { headZoom = !headZoom; renderText(); flyTo(false); });
+  if (id === 'head') document.querySelectorAll('.hs').forEach(b => b.addEventListener('click', () => { const p = hotspots[+b.dataset.j]; selectHeadCell(p.fx, p.fy); }));
+  if (id === 'decode') {
+    const thr = $('#thr');
+    thr.addEventListener('input', () => { scoreThr = +thr.value; $('#thr-l').textContent = scoreThr.toFixed(2); drawBoxes('decode'); updateCaption(); $('#dec-stat').textContent = `${decStat()}. The KITTI config uses 0.10.`; });
+    thr.addEventListener('change', () => keepFocus('thr'));
+  }
+  if (id === 'nms') {
+    $('#nms-run').addEventListener('click', runNMSAnim);
+    $('#nms-end').addEventListener('click', () => { stopNMS(); nmsShown = steps.length; drawBoxes('nms'); renderText(); updateCaption(); });
+    const iou = $('#iou');
+    iou.addEventListener('input', () => { iouThr = +iou.value; $('#iou-l').textContent = iouThr.toFixed(2); stopNMS(); steps = runNMS(activeCands(), iouThr); nmsShown = steps.length; drawBoxes('nms'); updateCaption(); $('#nms-txt').textContent = nmsLine(); });
+    iou.addEventListener('change', () => keepFocus('iou'));
+  }
+}
+function keepFocus(idSel){ renderText(); const el = document.getElementById(idSel); if (el) el.focus({ preventScroll:true }); }
+function applyConvMode(){
+  bevPlane.material.map = convMode === 'in' ? bevTex : convTex; bevPlane.material.needsUpdate = true;
+  const a = $('#cm-in'), b = $('#cm-out');
+  if (a) { a.setAttribute('aria-pressed', convMode === 'in'); b.setAttribute('aria-pressed', convMode === 'out'); }
+  updateCaption();
+}
+
+// ---------- Small figures (ink on paper) ----------
+function divColor(v){ const t = clamp(v, -1, 1); return css(t >= 0 ? mix(PAPER, INK, t) : mix(PAPER, BLUE, -t)); }
+function wColor(v){ return css(v >= 0 ? mix(PAPER, BLUE, Math.min(1, v)) : mix(PAPER, [120,124,128], Math.min(1, -v))); }
+const PAD = '#E4E5E1';
+function drawSlots(){
+  const c = $('#slots'), g = c.getContext('2d'), P = V.pillars.length, w = c.width - 20;
+  g.fillStyle = css(PAPER); g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = PAD; g.fillRect(10, 12, w, 24);
+  g.fillStyle = css(INK); g.fillRect(10, 12, w*P/MAXV, 24);
+  g.strokeStyle = css(INK); g.lineWidth = 1.5; g.strokeRect(10, 12, w, 24);
+  g.font = '18px "Spline Sans Mono", monospace'; g.fillStyle = '#5F646A';
+  g.textAlign = 'left'; g.fillText('0', 10, 58); g.textAlign = 'right'; g.fillText('40,000', 10 + w, 58);
+}
+function drawTable(){
+  const c = $('#ptable'), g = c.getContext('2d'), pl = V.pillars[sel];
+  const x0 = 70, cw = (c.width - x0 - 10)/10, rh = (c.height - 34)/32;
+  g.fillStyle = css(PAPER); g.fillRect(0, 0, c.width, c.height);
+  g.font = '17px "Spline Sans Mono", monospace'; g.fillStyle = '#5F646A'; g.textAlign = 'center';
+  ['x','y','z','i','Δx̄','Δȳ','Δz̄','Δxc','Δyc','Δzc'].forEach((l, j) => g.fillText(l, x0 + (j + .5)*cw, 22));
+  for (let r = 0; r < 32; r++) for (let j = 0; j < 10; j++) {
+    g.fillStyle = r < pl.idx.length ? divColor(pl.f[r*10 + j]*FSCALE[j]) : PAD;
+    g.fillRect(x0 + j*cw + 1, 30 + r*rh + 1, cw - 2, rh - 2);
+  }
+  g.textAlign = 'right'; g.fillStyle = '#5F646A';
+  g.fillText('pt 0', x0 - 8, 30 + rh*.8); g.fillText('pt 31', x0 - 8, 30 + 31*rh + rh*.8);
+}
+function drawPFN(){
+  const c = $('#pfnfig'); if (!c) return;
+  const g = c.getContext('2d'), pl = V.pillars[sel], n = pl.idx.length, rows = [], tmp = new Float32Array(64);
+  for (let r = 0; r < n; r++) { pfnRow(pl.f, r*10, tmp); rows.push(Float32Array.from(tmp)); }
+  const mx = new Float32Array(64); rows.forEach(rw => rw.forEach((v, j) => { if (v > mx[j]) mx[j] = v; }));
+  const sc = j => F.scale[j] || 1, cell = v => v > 0 ? css(mix([226,227,223], INK, v)) : css(PAPER);
+  g.fillStyle = css(PAPER); g.fillRect(0, 0, c.width, c.height);
+  g.font = '17px "Spline Sans Mono", monospace'; g.textAlign = 'left';
+  const rh = 7, top = 46;
+  g.fillStyle = '#43474D'; g.fillText('points × 10', 16, 26);
+  for (let r = 0; r < 32; r++) for (let j = 0; j < 10; j++) { g.fillStyle = r < n ? divColor(pl.f[r*10 + j]*FSCALE[j]) : PAD; g.fillRect(16 + j*9, top + r*rh, 8, rh - 1); }
+  g.fillStyle = css(BLUE); g.fillText('× weights 64×10', 130, 26);
+  for (let ch = 0; ch < 64; ch++) for (let j = 0; j < 10; j++) { g.fillStyle = wColor(W[ch*10 + j]); g.fillRect(140 + ch*3, top + j*8, 3, 7); }
+  g.fillStyle = '#43474D'; g.fillText('→ ReLU', 140, top + 108);
+  g.fillText('points × 64', 360, 26);
+  for (let r = 0; r < 32; r++) for (let ch = 0; ch < 64; ch++) { g.fillStyle = r >= n ? PAD : cell(Math.min(1, rows[r][ch]/sc(ch))); g.fillRect(360 + ch*5, top + r*rh, 5, rh - 1); }
+  g.strokeStyle = css(RED); g.lineWidth = 2; g.strokeRect(360 + channel*5 - 1, top - 2, 7, 32*rh + 3);
+  const sy = top + 32*rh + 30;
+  g.fillStyle = '#43474D'; g.fillText('max down each column = one 64-number summary', 16, sy - 8);
+  for (let ch = 0; ch < 64; ch++) { g.fillStyle = cell(Math.min(1, mx[ch]/sc(ch))); g.fillRect(360 + ch*5, sy, 5, 22); }
+  g.strokeStyle = css(INK); g.lineWidth = 1; g.strokeRect(359.5, sy - .5, 321, 23);
+  g.strokeStyle = css(RED); g.lineWidth = 2; g.strokeRect(360 + channel*5 - 1, sy - 2, 7, 26);
+}
+function drawPatches(){
+  const a = $('#pin'), b = $('#pout'); if (!a) return;
+  const ga = a.getContext('2d'), gb = b.getContext('2d'), cs = 10, os = 240/11;
+  ga.fillStyle = css(PAPER); ga.fillRect(0, 0, 240, 240);
+  for (let y = 0; y < 24; y++) for (let x = 0; x < 24; x++) {
+    ga.fillStyle = css(inkCell(bevIn[(focus.iy0 + y)*GX + focus.ix0 + x]));
+    ga.fillRect((23 - y)*cs, (23 - x)*cs, cs - 1, cs - 1);
+  }
+  const ox = stencilJ % 11, oy = Math.floor(stencilJ / 11);
+  ga.strokeStyle = css(RED); ga.lineWidth = 2.5; ga.strokeRect((21 - 2*oy)*cs, (21 - 2*ox)*cs, 3*cs, 3*cs);
+  gb.fillStyle = css(PAPER); gb.fillRect(0, 0, 240, 240);
+  for (let j = 0; j <= stencilJ; j++) {
+    const x = j % 11, y = Math.floor(j / 11);
+    gb.fillStyle = css(inkCell(Math.min(1, convAt(bevIn, focus.ix0 + 1 + 2*x, focus.iy0 + 1 + 2*y)/convRes.scale)));
+    gb.fillRect((10 - y)*os, (10 - x)*os, os - 1, os - 1);
+  }
+  gb.strokeStyle = css(RED); gb.lineWidth = 2.5; gb.strokeRect((10 - oy)*os, (10 - ox)*os, os, os);
+}
+
+// ---------- Stage animations ----------
+function startScatter(){
+  pillarMesh.visible = true; layoutPillars(1, 'feat');
+  bevPlane.material.opacity = 0;
+  scatterAnim = RM ? null : { start:performance.now(), dur:1300 };
+  if (RM) { pillarMesh.visible = false; bevPlane.material.opacity = 1; }
+}
+function stopNMS(){ if (nmsTimer) { clearInterval(nmsTimer); nmsTimer = null; } }
+function runNMSAnim(){
+  stopNMS();
+  if (RM) { nmsShown = steps.length; drawBoxes('nms'); renderText(); updateCaption(); return; }
+  nmsShown = 0; drawBoxes('nms'); renderText();
+  nmsTimer = setInterval(() => {
+    nmsShown++;
+    drawBoxes('nms');
+    if (STAGES[stage].id === 'nms') { const t = $('#nms-txt'); if (t) t.textContent = nmsLine(); }
+    updateCaption();
+    if (nmsShown >= steps.length) { stopNMS(); if (STAGES[stage].id === 'nms') renderText(); }
+  }, 650);
+}
+function startStencil(){
+  if (stencilTimer) clearInterval(stencilTimer);
+  stencilJ = 0; placeStencil(); drawPatches();
+  if (RM) { stencilJ = 120; placeStencil(); drawPatches(); return; }
+  stencilTimer = setInterval(() => { stencilJ = (stencilJ + 1) % 121; placeStencil(); drawPatches(); }, 110);
+}
+
+// ---------- Figure caption ----------
+function updateCaption(){
+  const id = STAGES[stage].id, P = V.pillars.length, n = stage + 1;
+  let t = '', hint = 'Drag to orbit · right-drag or shift-drag to pan · scroll to zoom';
+  if (id === 'points') t = `One scan: ${fmt(S.N)} returns, ${fmt(S.nIn)} of them inside the model's range (red box). Shade darkens with height.`;
+  else if (id === 'pillars') { t = `${fmt(P)} pillars, ${(P/(GX*GY)*100).toFixed(1)}% of squares. Each is drawn to the height of its highest point; darker means more points. The selected pillar is outlined in red.`; hint += ' · click a pillar'; }
+  else if (id === 'pfn') { t = `Pillars shaded by feature channel ${channel} (${chName(channel)}). Darker means a larger value.`; hint += ' · click a pillar'; }
+  else if (id === 'scatter') t = `The bird's-eye-view grid, channel ${channel}: 496 × 432 squares, blank where the value is zero.`;
+  else if (id === 'backbone') t = convMode === 'in' ? `Input grid, channel ${channel}. The outlined patch appears in Fig. 5b; the red square is the 3 × 3 window.` : `After one 3 × 3 convolution with stride 2: half the resolution, 248 × 216.`;
+  else if (id === 'head') { t = `Best class score at each of 248 × 216 positions, in the same colors as the boxes later on: black car, blue pedestrian, brown cyclist. Darker means more confident (simulated). ${hotspots.length} hotspots clear the 0.10 threshold. At the red square, the best-scoring of its six anchors. Rings mark each hotspot.`; hint += ' · click a hotspot to zoom to its anchors'; }
+  else if (id === 'decode') t = `${fmt(activeCands().length)} candidate boxes with score ≥ ${scoreThr.toFixed(2)}. Fainter means lower score. Black car, blue pedestrian, brown cyclist.`;
+  else if (id === 'nms') t = nmsShown >= steps.length ? `${fmt(activeCands().length)} candidates reduced to ${steps.length} detections.` : `Step ${nmsShown} of ${steps.length}. Red: kept this step. Pink: deleted for overlapping it.`;
+  $('#figcap').innerHTML = `<b>Fig. ${n}</b>${t}`;
+  $('#hint').textContent = hint;
+}
+
+// ---------- Stage switching ----------
+function setStage(i, instant = false){
+  stage = i;
+  markSchematic(i);
+  $('#tb-sheet').textContent = `${i + 1} / 8`;
+  stopNMS(); if (stencilTimer) { clearInterval(stencilTimer); stencilTimer = null; }
+  scatterAnim = null;
+  const id = STAGES[i].id;
+  pointsObj.visible = !['scatter', 'backbone', 'head'].includes(id);
+  colorPoints(id === 'points' ? 'all' : (id === 'decode' || id === 'nms') ? 'dim' : 'range');
+  rangeBox.visible = id === 'points' || id === 'pillars';
+  coarseGrid.visible = id === 'pillars' || id === 'pfn';
+  pillarMesh.visible = id === 'pillars' || id === 'pfn';
+  const showSel = id === 'pillars' || id === 'pfn';
+  if (showSel) buildSelection();
+  [selPts, selBox, fineGrid].forEach(o => { if (o) o.visible = showSel; });
+  bevPlane.visible = bevFrame.visible = ['scatter', 'backbone', 'head'].includes(id);
+  bevPlane.material.opacity = 1;
+  bevPlane.material.map = id === 'head' ? headTex : (id === 'backbone' && convMode === 'out') ? convTex : bevTex;
+  bevPlane.material.needsUpdate = true;
+  stencil.visible = id === 'backbone'; if (patchOutline) patchOutline.visible = id === 'backbone';
+  anchorGroup.visible = hotspotGroup.visible = id === 'head';
+  if (boxLines) boxLines.visible = false;
+  if (id === 'pillars') layoutPillars(1, 'count');
+  if (id === 'pfn') layoutPillars(1, 'feat');
+  if (id === 'scatter') startScatter();
+  if (id === 'backbone') { buildStencil(); stencil.visible = true; patchOutline.visible = true; startStencil(); }
+  if (id === 'head') { headZoom = false; buildHotspotRings(); buildAnchors(); }
+  if (id === 'decode') drawBoxes('decode');
+  if (id === 'nms') { steps = runNMS(activeCands(), iouThr); nmsShown = steps.length; drawBoxes('nms'); }
+  renderText(); updateCaption(); flyTo(instant);
+}
+
+function selectHeadCell(fx, fy){ headCell = [fx, fy]; buildAnchors(); headZoom = true; renderText(); updateCaption(); flyTo(false); }
+
+// ---------- Picking ----------
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!downAt) return;
+  const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]); downAt = null;
+  if (moved > 5) return;
+  const rc = renderer.domElement.getBoundingClientRect();
+  ndc.set((e.clientX - rc.left)/rc.width*2 - 1, -(e.clientY - rc.top)/rc.height*2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const id = STAGES[stage].id;
+  if (id === 'pillars' || id === 'pfn') {
+    const hit = ray.intersectObject(pillarMesh, false)[0];
+    if (hit && hit.instanceId != null) { sel = hit.instanceId; buildSelection(); renderText(); updateCaption(); }
+  } else if (id === 'head') {
+    const hit = ray.intersectObject(bevPlane, false)[0];
+    if (hit && hit.uv) {
+      const fx = clamp(Math.floor(hit.uv.x*FX), 0, FX-1), fy = clamp(Math.floor(hit.uv.y*FY), 0, FY-1), h = nearestHotspot(fx, fy, 6);
+      if (h) selectHeadCell(h.fx, h.fy); else selectHeadCell(fx, fy);
+    }
+  }
+});
+
+// ---------- Controls ----------
+function nextScan(){ k++; rebuild(); setStage(stage, true); }
+$('#btn-next').addEventListener('click', () => { if (ready) nextScan(); });
+$('#btn-reset').addEventListener('click', () => { if (ready) flyTo(false); });
+window.addEventListener('keydown', e => {
+  if (!ready || (e.target.closest && e.target.closest('input, textarea, select'))) return;
+  if (e.key === 'ArrowRight' && stage < 7) setStage(stage + 1);
+  if (e.key === 'ArrowLeft' && stage > 0) setStage(stage - 1);
+});
+
+// ---------- Render loop ----------
+function resize(){
+  const w = plate.clientWidth, h = plate.clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / Math.max(h, 1); camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(plate);
+function loop(now){
+  if (tween) {
+    let u = (now - tween.start)/tween.dur; if (u >= 1) u = 1;
+    const e = u < .5 ? 4*u*u*u : 1 - Math.pow(-2*u + 2, 3)/2;
+    camera.position.lerpVectors(tween.p0, tween.p1, e); controls.target.lerpVectors(tween.t0, tween.t1, e);
+    if (u === 1) tween = null;
+  }
+  if (scatterAnim) {
+    const u = Math.min(1, (now - scatterAnim.start)/scatterAnim.dur), e = 1 - Math.pow(1 - u, 3);
+    layoutPillars(Math.max(.02, 1 - e), 'feat');
+    bevPlane.material.opacity = Math.min(1, u*1.4);
+    if (u >= 1) { scatterAnim = null; pillarMesh.visible = false; bevPlane.material.opacity = 1; }
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  placeLabels();
+  requestAnimationFrame(loop);
+}
+
+// ---------- Boot ----------
+setTimeout(() => {
+  try {
+    rebuild();
+    resize();
+    ready = true;
+    setStage(0, true);
+    $('#loading').hidden = true;
+    requestAnimationFrame(loop);
+  } catch (e) {
+    ready = false;
+    fail('Something went wrong while building the scene.', `Error: <code>${String(e && e.message || e)}</code>. Please send this message to whoever shared the page.`);
+  }
+}, 30);
+
+})();
+</script>
+</body>
+</html>
