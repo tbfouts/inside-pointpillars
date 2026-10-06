@@ -1349,10 +1349,21 @@ function updateCaption(){
   $('#hint').textContent = hint;
 }
 
+// ---------- Stage links: #pillars, #scatter, … (or #1–#9) open that stage ----------
+const SLUGS = ['points', 'pillars', 'pillar-features', 'scatter', 'backbone', 'detection-head', 'box-decoding', 'nms', 'detections'];
+function stageFromHash(){
+  const h = decodeURIComponent(location.hash.slice(1)).toLowerCase(); if (!h) return -1;
+  const n = parseInt(h, 10);
+  if (String(n) === h && n >= 1 && n <= STAGES.length) return n - 1;
+  return SLUGS.indexOf(h);
+}
+window.addEventListener('hashchange', () => { const j = stageFromHash(); if (ready && j >= 0 && j !== stage) setStage(j); });
+
 // ---------- Stage switching ----------
 function setStage(i, instant = false){
   stage = i;
   markSchematic(i);
+  try { const want = '#' + SLUGS[i]; if (location.hash !== want) history.replaceState(null, '', want); } catch (_) {}
   $('#tb-sheet').textContent = `${i + 1} / ${STAGES.length}`;
   stopNMS(); if (stencilTimer) { clearInterval(stencilTimer); stencilTimer = null; }
   scatterAnim = null;
@@ -1450,7 +1461,7 @@ setTimeout(() => {
     rebuild();
     resize();
     ready = true;
-    setStage(0, true);
+    setStage(Math.max(0, stageFromHash()), true);
     $('#loading').hidden = true;
     requestAnimationFrame(loop);
   } catch (e) {

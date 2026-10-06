@@ -26,6 +26,13 @@ Each stage shows the tensors going in and out, labeled as **features** (differen
 - **Generated:** the street and the LiDAR scan are ray-cast in your browser from a simple synthetic scene (a 64-beam sensor, 0.25° azimuth steps).
 - **Illustrative:** the pillar-feature weights are hand-set or random, and the detection scores are simulated around the scene's real objects. The arithmetic in each stage is real; the numbers are not a trained model's output.
 
+## Linking to a stage
+
+Add the stage name to the URL to open it directly, for example
+[`#scatter`](https://tbfouts.github.io/inside-pointpillars/#scatter). The names are
+`points`, `pillars`, `pillar-features`, `scatter`, `backbone`, `detection-head`,
+`box-decoding`, `nms` and `detections`; `#1` to `#9` also work.
+
 ## Running locally
 
 It's a single static file. Open `index.html` in a browser, or serve the folder:
