@@ -144,6 +144,47 @@ table.anch tr.win td{font-weight:600;color:var(--ink);background:var(--red-tint)
   .tblock > div:nth-child(3){grid-column:1 / -1;border-left:none;border-top:1px solid var(--ink)}
   .sheet{padding-inline:16px}
 }
+/* Phone layout: built by script only on narrow screens (compact strip, pinned figure, swipeable text, bottom bar) */
+.m-only{display:none}
+@media (max-width:760px){
+  .sheet{padding-inline:16px;padding-block:10px calc(84px + env(safe-area-inset-bottom,0px))}
+  .head{padding-bottom:8px;border-bottom-width:1px}
+  .head h1{font-size:24px}
+  .head p,.tblock,.schem-wrap,.key{display:none}
+  .m-strip{display:block;margin:8px 0 6px}
+  .m-strip svg{display:block;width:100%;height:auto}
+  .m-strip .mn{cursor:pointer}
+  .m-strip .mn .b{fill:var(--sheet);stroke:var(--ink);stroke-width:1.2}
+  .m-strip .mn.plugin .b{fill:url(#mh)}
+  .m-strip .mn.on .b{stroke:var(--red);stroke-width:2;fill:var(--red-tint)}
+  .m-strip .mn.plugin.on .b{fill:url(#mh-r)}
+  .m-strip .mn text{font:500 10px var(--f-mono);fill:var(--ink-2);text-anchor:middle}
+  .m-strip .mn.on text{fill:var(--red)}
+  .m-strip .ml{font:500 7.5px var(--f-sans);letter-spacing:.08em;fill:var(--ink-3)}
+  .body{gap:12px}
+  .plate-col{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--paper);margin-inline:-16px;padding:0 16px 6px}
+  .plate{height:40vh;min-height:250px}
+  .plate .tools{top:8px;right:8px}
+  .plate .tools .m-only{display:inline-block}
+  .figcap{font-size:12.5px;margin-top:6px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .hint{display:none}
+  .text{touch-action:pan-y}
+  .text h2{font-size:28px;margin-bottom:10px}
+  .text p{font-size:15.5px}
+  .fig,.shapes{overflow-x:auto}
+  .text.enter-next{animation:enterNext .24s ease-out}
+  .text.enter-prev{animation:enterPrev .24s ease-out}
+  .m-bar{display:grid;grid-template-columns:52px minmax(0,1fr) 52px;gap:8px;align-items:center;position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--sheet);border-top:1.5px solid var(--ink);padding:7px 10px calc(7px + env(safe-area-inset-bottom,0px))}
+  .m-bar .arrow{height:44px;background:var(--sheet);border:1px solid var(--ink);font:400 22px/1 var(--f-sans);color:var(--ink);cursor:pointer}
+  .m-bar .arrow:active{background:var(--ink);color:var(--sheet)}
+  .m-bar .arrow:disabled{opacity:.25}
+  .m-bar .mid{text-align:center;line-height:1.25;min-width:0}
+  .m-bar .mid b{font:500 13px var(--f-mono);color:var(--red);margin-right:6px}
+  .m-bar .mid .nm{font-weight:700;font-size:15.5px}
+  .m-bar .mid small{display:block;font-size:11.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+}
+@keyframes enterNext{from{transform:translateX(32px);opacity:.25}to{transform:none;opacity:1}}
+@keyframes enterPrev{from{transform:translateX(-32px);opacity:.25}to{transform:none;opacity:1}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -594,6 +635,82 @@ function markSchematic(i){
 }
 buildSchematic();
 
+// ---------- Phone layout (created only while the screen is narrow) ----------
+const PHONE = window.matchMedia('(max-width: 760px)');
+const RUNS_SHORT = { input:'Sensor data in', cuda:'CUDA kernel, outside the engine', cudacpu:'CUDA + CPU, outside the engine', layers:'TensorRT layers, inside the engine', plugin:'TensorRT plugin, inside the engine', output:'Model output' };
+let phone = null, swiped = false;
+function buildPhone(){
+  const strip = document.createElement('div'); strip.className = 'm-strip m-only';
+  const n = STAGES.length, W = 340, nw = 26, nh = 22, gap = (W - 20 - n*nw)/(n - 1), y = 24, nx = i => 10 + i*(nw + gap);
+  const para = x => `${x + 5},${y} ${x + nw},${y} ${x + nw - 5},${y + nh} ${x},${y + nh}`;
+  let g = `<defs><pattern id="mh" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="4" height="4" fill="#FBFBF9"/><line x1="0" y1="0" x2="0" y2="4" stroke="#BFC1BB" stroke-width="1.1"/></pattern><pattern id="mh-r" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="4" height="4" fill="#F7E1DE"/><line x1="0" y1="0" x2="0" y2="4" stroke="#E5A7A1" stroke-width="1.1"/></pattern></defs>`;
+  g += `<rect x="${nx(2) - 5}" y="${y - 15}" width="${nx(5) + nw - nx(2) + 10}" height="${nh + 21}" fill="none" stroke="#16181B" stroke-width="1" stroke-dasharray="4 3"/>`;
+  g += `<text class="ml" x="${nx(2) - 1}" y="${y - 6}">TENSORRT ENGINE</text>`;
+  g += `<path d="M${nx(0) + nw} ${y + nh/2} H${nx(n - 1)}" stroke="#16181B" stroke-width="1" fill="none"/>`;
+  STAGES.forEach((st, i) => {
+    const io = st.runs === 'input' || st.runs === 'output', x = nx(i);
+    g += `<g class="mn${st.runs === 'plugin' ? ' plugin' : ''}" data-i="${i}" role="button" tabindex="0" aria-label="Stage ${i + 1}: ${st.name}">`;
+    g += io ? `<polygon class="b" points="${para(x)}"/>` : `<rect class="b" x="${x}" y="${y}" width="${nw}" height="${nh}"/>`;
+    g += `<text x="${x + nw/2}" y="${y + nh/2 + 3.5}">${i + 1}</text></g>`;
+  });
+  strip.innerHTML = `<svg viewBox="0 0 ${W} ${y + nh + 8}" aria-label="Pipeline stages">${g}</svg>`;
+  $('.head').after(strip);
+  strip.querySelectorAll('.mn').forEach(el => {
+    const go = () => ready && goStage(+el.dataset.i);
+    el.addEventListener('click', go);
+    el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+  });
+
+  const bar = document.createElement('nav'); bar.className = 'm-bar m-only'; bar.setAttribute('aria-label', 'Stages');
+  bar.innerHTML = `<button class="arrow" type="button" id="m-prev" aria-label="Previous stage">‹</button><div class="mid" id="m-mid"></div><button class="arrow" type="button" id="m-next" aria-label="Next stage">›</button>`;
+  document.body.appendChild(bar);
+  bar.querySelector('#m-prev').addEventListener('click', () => ready && goStage(stage - 1));
+  bar.querySelector('#m-next').addEventListener('click', () => ready && goStage(stage + 1));
+
+  const nextScanBtn = document.createElement('button'); nextScanBtn.className = 'btn m-only'; nextScanBtn.type = 'button'; nextScanBtn.textContent = 'Next scan';
+  nextScanBtn.addEventListener('click', () => ready && nextScan());
+  $('.plate .tools').prepend(nextScanBtn);
+
+  // Swipe the text left or right to change stage
+  const text = $('#text');
+  let sx = null, sy = null;
+  const onStart = e => {
+    if (e.touches.length !== 1) { sx = null; return; }
+    const t = e.target, scroller = t.closest && t.closest('.fig, .shapes, .hs-list');
+    if ((t.closest && t.closest('input, button, select')) || (scroller && scroller.scrollWidth > scroller.clientWidth + 2)) { sx = null; return; }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+  };
+  const onEnd = e => {
+    if (sx == null) return;
+    const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy; sx = null;
+    if (Math.abs(dx) > 56 && Math.abs(dx) > 1.6*Math.abs(dy)) { swiped = true; goStage(stage + (dx < 0 ? 1 : -1)); }
+  };
+  text.addEventListener('touchstart', onStart, { passive:true });
+  text.addEventListener('touchend', onEnd, { passive:true });
+  phone = { strip, bar, nextScanBtn, remove(){ strip.remove(); bar.remove(); nextScanBtn.remove(); text.removeEventListener('touchstart', onStart); text.removeEventListener('touchend', onEnd); } };
+  if (ready) updatePhone();
+}
+function updatePhone(){
+  if (!phone) return;
+  phone.strip.querySelectorAll('.mn').forEach(el => el.classList.toggle('on', +el.dataset.i === stage));
+  const st = STAGES[stage];
+  $('#m-mid').innerHTML = `<span><b>${String(stage + 1).padStart(2, '0')}</b><span class="nm">${st.name}</span></span><small>${swiped ? RUNS_SHORT[st.runs] : 'Swipe the text to change stage'}</small>`;
+  $('#m-prev').disabled = stage === 0; $('#m-next').disabled = stage === STAGES.length - 1;
+}
+function goStage(j){
+  if (j < 0 || j >= STAGES.length || j === stage) return;
+  const dir = j > stage ? 'enter-next' : 'enter-prev';
+  setStage(j);
+  if (!phone) return;
+  const text = $('#text');
+  text.classList.remove('enter-next', 'enter-prev'); void text.offsetWidth; if (!RM) text.classList.add(dir);
+  const top = text.getBoundingClientRect().top + window.scrollY - $('.plate-col').offsetHeight - 8;
+  if (window.scrollY > top) window.scrollTo({ top, behavior:RM ? 'auto' : 'smooth' });
+}
+function syncPhone(){ if (PHONE.matches && !phone) buildPhone(); else if (!PHONE.matches && phone) { phone.remove(); phone = null; } }
+syncPhone();
+if (PHONE.addEventListener) PHONE.addEventListener('change', syncPhone); else if (PHONE.addListener) PHONE.addListener(syncPhone);
+
 // ---------- Startup checks: say why 3D can't start instead of hanging ----------
 function fail(title, detail){
   $('#loading').hidden = false;
@@ -617,7 +734,7 @@ const plate = $('#plate');
 let renderer;
 try { renderer = new THREE.WebGLRenderer({ antialias:true }); }
 catch (e) { fail("Your browser couldn't start WebGL.", `The 3D figure needs WebGL, and creating it failed (${e.message}). Turn on hardware acceleration in your browser settings and restart the browser.`); return; }
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, PHONE.matches ? 1.5 : 2));
 renderer.setClearColor(0xfbfbf9, 1);
 plate.prepend(renderer.domElement);
 const scene = new THREE.Scene();
@@ -1263,7 +1380,7 @@ function setStage(i, instant = false){
   if (id === 'decode') drawBoxes('decode');
   if (id === 'nms') { steps = runNMS(activeCands(), iouThr); nmsShown = steps.length; drawBoxes('nms'); }
   if (id === 'out') { steps = runNMS(activeCands(), iouThr); drawBoxes('final'); }
-  renderText(); updateCaption(); flyTo(instant);
+  renderText(); updateCaption(); updatePhone(); flyTo(instant);
 }
 
 function selectHeadCell(fx, fy){ headCell = [fx, fy]; buildAnchors(); headZoom = true; renderText(); updateCaption(); flyTo(false); }
