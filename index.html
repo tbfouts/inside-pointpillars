@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;700&family=Spline+Sans+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: a drawing sheet. Title block top right; the pipeline drawn as a block diagram across the top (click a block);
+/* Layout: a drawing sheet. Title block (config, scan, stage) top right; the pipeline drawn as a block diagram across the top (click a block);
    below it a figure plate (the 3D view) with a numbered caption, and the stage text beside it. Stacks on phones.
    Single light theme by choice: black ink on paper, red as the one spot color, blue reserved for weights. */
 :root{
@@ -198,7 +198,7 @@ table.anch tr.win td{font-weight:600;color:var(--ink);background:var(--red-tint)
     <div class="tblock" aria-label="Drawing details">
       <div><span class="k">Config</span><span class="v">KITTI · CUDA-PointPillars</span></div>
       <div><span class="k">Scan</span><span class="scan"><span class="v" id="tb-scan">001</span><button class="btn" id="btn-next" type="button">Next scan</button></span></div>
-      <div><span class="k">Sheet</span><span class="v" id="tb-sheet">1 / 9</span></div>
+      <div><span class="k">Stage</span><span class="v" id="tb-stage">1 / 9</span></div>
     </div>
   </header>
 
@@ -1114,7 +1114,7 @@ function renderText(){
   } else if (id === 'pfn') {
     h += `<p>A learned layer turns each point's 10 numbers into 64, using a 64 × 10 weight matrix followed by ReLU, which replaces negatives with zero. Then, for each of the 64, it keeps the largest value across the pillar's points.</p>
       <p>The result is one 64-number summary per pillar, whether the pillar held 1 point or 32.</p>
-      <p class="aside">The engine runs this on all 40,000 slots, padding included. A few million wasted multiplies cost less than a shape TensorRT can't predict.</p>
+      <p class="aside">The engine runs this on all 40,000 slots, padding included. Processing padding wastes some work, but it keeps every shape fixed, which TensorRT needs to plan the engine.</p>
       ${shapes([row('in', '[40000, 32, 10]', 'voxels'), row('weights', '[64, 10]', 'linear layer; BatchNorm folded in', true), row('out', '[40000, 64]', 'pillar features')])}
       <figure class="fig"><canvas id="pfnfig" width="720" height="330" aria-label="Pillar feature computation"></canvas><figcaption><b>Fig. 3a</b>The selected pillar: its points × weights, after ReLU, then the max down each column. Weights: blue positive, grey negative.</figcaption></figure>
       ${chCtl()}
@@ -1159,7 +1159,7 @@ function renderText(){
       return `<tr${j === top && sc >= .1 ? ' class="win"' : ''}><td><span class="sw" style="color:${CLASS_HEX[c]}"></span>${CLASSES[c]}</td><td>${a[0]}×${a[1]}×${a[2]}</td><td>${j % 2 ? '90°' : '0°'}</td><td class="num">${sc.toFixed(2)}</td></tr>`;
     }).join('');
     h += `<p>At each of 248 × 216 positions the model considers six template boxes, called anchors: car, pedestrian and cyclist sizes, each at 0° and 90°. For every anchor it outputs a raw score per class (decoding turns it into a 0–1 confidence), seven corrections to the box, and which end is the front.</p>
-      <p>The engine's work ends with these three tensors. They are still numbers on a grid, not boxes.</p>
+      <p>The engine's work ends with these three tensors. Turning them into boxes happens outside the engine.</p>
       <p class="aside">Anchors are only starting guesses, and they don't have to sit on the ground. This config puts the bottom of the pedestrian and cyclist anchors at −0.6 m in sensor coordinates, about 1.1 m above the road, so in the figure they float. The height correction in box_preds moves the final boxes down.</p>
       ${shapes([row('in', '[1, 384, 248, 216]', 'backbone features'), row('weights', '1 × 1 convs', '384 → 18, 42 and 12 channels', true), row('out', '[1, 248, 216, 18]', 'cls_preds: 6 anchors × 3 classes'), row('', '[1, 248, 216, 42]', 'box_preds: 6 anchors × 7 corrections'), row('', '[1, 248, 216, 12]', 'dir_cls_preds: 6 anchors × 2')])}
       <figure class="fig"><div class="hs-list">${hotspots.map((p, j) => `<button class="hs" type="button" data-j="${j}" aria-pressed="${p.fx === fx && p.fy === fy}"><span class="sw" style="color:${CLASS_HEX[p.c]}"></span><span class="hs-c">${CLASSES[p.c]}</span><span class="hs-s">${p.s.toFixed(2)}</span><span class="hs-p">${p.x.toFixed(1)} m ahead, ${Math.abs(p.y).toFixed(1)} m ${p.y >= 0 ? 'left' : 'right'}</span></button>`).join('')}</div><figcaption><b>Fig. 6b</b>Every hotspot in this scan, strongest first: the peaks that clear the 0.10 score threshold. Click one, or click it in the figure.</figcaption></figure>
@@ -1184,7 +1184,7 @@ function renderText(){
     const list = activeCands(), det = steps.map(st => list[st.keep]);
     const deg = b => Math.round(((b.yaw*180/Math.PI) % 360 + 360) % 360);
     const rows = det.map(b => `<tr><td><span class="sw" style="color:${CLASS_HEX[b.cls]}"></span>${CLASSES[b.cls]}</td><td class="num">${b.score.toFixed(2)}</td><td class="num">${b.x.toFixed(1)}, ${b.y.toFixed(1)}</td><td class="num">${b.l.toFixed(1)}×${b.w.toFixed(1)}×${b.h.toFixed(1)}</td><td class="num">${deg(b)}°</td></tr>`).join('');
-    h += `<p>This is everything the model hands on: ${det.length} boxes for this scan, each with a class, a confidence, a center, a size and a heading. Tracking, prediction and planning work from this list. They never see the points, pillars or feature maps.</p>
+    h += `<p>This list is the model's entire output: ${det.length} boxes for this scan, each with a class, a confidence, a center, a size and a heading. Tracking, prediction and planning work from it, not from the points or feature maps.</p>
       <p class="aside">The sensor spins 10 times a second, so the whole pipeline, from points to this list, has to finish well inside 100 ms, with time left over for everything downstream.</p>
       ${shapes([row('in', `[${fmt(list.length)}, 9]`, 'candidate boxes, before NMS'), row('out', `[${det.length}, 9]`, 'x, y, z, l, w, h, heading, class, score')])}
       <figure class="fig"><table class="anch"><thead><tr><th>Class</th><th style="text-align:right">Score</th><th style="text-align:right">x, y (m)</th><th style="text-align:right">l×w×h (m)</th><th style="text-align:right">Heading</th></tr></thead><tbody>${rows}</tbody></table><figcaption><b>Fig. 9a</b>The detections, strongest first. x is meters ahead of the sensor, y meters to the left.</figcaption></figure>
@@ -1364,7 +1364,7 @@ function setStage(i, instant = false){
   stage = i;
   markSchematic(i);
   try { const want = '#' + SLUGS[i]; if (location.hash !== want) history.replaceState(null, '', want); } catch (_) {}
-  $('#tb-sheet').textContent = `${i + 1} / ${STAGES.length}`;
+  $('#tb-stage').textContent = `${i + 1} / ${STAGES.length}`;
   stopNMS(); if (stencilTimer) { clearInterval(stencilTimer); stencilTimer = null; }
   scatterAnim = null;
   const id = STAGES[i].id;
